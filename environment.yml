@@ -1,0 +1,31 @@
+name: transfer-learning
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  # Core scientific stack (prefer conda for compiled libs)
+  - numpy=1.26
+  - scipy=1.16
+  - matplotlib=3.10
+  - pandas
+  - h5py
+  - pillow
+  - tqdm
+  - colorama
+  - tornado
+  # PyTorch (CPU on macOS; MPS is bundled by default when available)
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pip
+  
+  # Pip-only (not reliably provided/pinned via conda)
+  - pip:
+      - mat73==0.65
+      - munkres==1.1.4
+      - pymatreader==1.1.0
+      - xmltodict==0.14.2
+      - setuptools==80.9.0
+      - wheel==0.45.1

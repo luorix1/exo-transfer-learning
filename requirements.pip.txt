@@ -1,0 +1,7 @@
+# Top-level pip requirements only (conda handles the rest)
+mat73==0.65
+munkres==1.1.4
+pymatreader==1.1.0
+xmltodict==0.14.2
+setuptools==80.9.0
+wheel==0.45.1
