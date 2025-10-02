@@ -55,7 +55,7 @@ def lower_map(columns: List[str]) -> Dict[str, str]:
 
 SEGMENT_ALIASES = {
     # canonical opensim segment names mapped from common IMU prefixes
-    "pelvis": ["pelvis", "pelv"],
+    "pelvis": ["pelvis", "pelv", "trunk", "torso"],
     "femur_r": ["thigh_r", "femur_r", "thigh", "rthigh", "right_thigh"],
     "tibia_r": ["shank_r", "tibia_r", "shank", "rshank", "right_shank"],
     "foot_r": ["foot_r", "rfoot", "right_foot", "foot"],
@@ -345,7 +345,7 @@ def main():
         np.savetxt(outdir / f"{seg}_real_to_canonical_R.txt", R, fmt="%.8f")
         # Convert and save transformed gyro
         real_conv = (R @ real_gyro_map[seg].T).T
-        conv_df = pd.DataFrame(real_conv, columns=[f"{seg}_Gyro_X","{seg}_Gyro_Y","{seg}_Gyro_Z"])
+        conv_df = pd.DataFrame(real_conv, columns=[f"{seg}_Gyro_X", f"{seg}_Gyro_Y", f"{seg}_Gyro_Z"])
         conv_df.insert(0, "Time", common_t)
         conv_df.to_csv(outdir / f"{seg}_gyro_canonical.csv", index=False)
 

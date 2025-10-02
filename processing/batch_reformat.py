@@ -90,6 +90,54 @@ def to_snake_case(name: str) -> str:
     return s
 
 
+def standardize_segment_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardize segment names to canonical format.
+    
+    Transforms:
+    - trunk -> pelvis
+    - For unilateral data (no _l/_r suffix):
+      - thigh -> thigh_r
+      - shank -> shank_r
+      - tibia -> tibia_r
+      - femur -> femur_r
+      - foot -> foot_r
+    """
+    df = df.copy()
+    new_columns = []
+    
+    for col in df.columns:
+        col_str = str(col)
+        col_lower = col_str.lower()
+        
+        # Step 1: Replace 'trunk' with 'pelvis' (case-insensitive)
+        # Match trunk as whole word or followed by underscore
+        new_col = re.sub(r'\btrunk(?=_|\b)', 'pelvis', col_str, flags=re.IGNORECASE)
+        
+        # Step 2: For unilateral data, add _r suffix to segment names without side indicators
+        # Update col_lower after trunk replacement
+        col_lower = new_col.lower()
+        # Check if column already has _l, _r, _left, or _right suffix after the segment name
+        has_side_suffix = bool(re.search(r'_(l|r|left|right)_', col_lower))
+        
+        if not has_side_suffix:
+            # Add _r suffix to common unilateral segments (assume right side)
+            # Pattern: segment_ (followed by underscore but not _l, _r, _left, _right)
+            # Note: pelvis doesn't get _r since it's already bilateral/central
+            for segment in ['thigh', 'femur', 'shank', 'tibia', 'foot']:
+                # Match: segment followed by underscore (but not _l, _r, _left, _right)
+                # e.g., 'thigh_gyro' -> 'thigh_r_gyro'
+                pattern = rf'\b{segment}_(?!(l|r|left|right)_)'
+                if re.search(pattern, col_lower):
+                    # Replace with segment_r_
+                    new_col = re.sub(pattern, f'{segment}_r_', new_col, flags=re.IGNORECASE)
+                    break  # Only replace the first matching segment
+        
+        new_columns.append(new_col)
+    
+    df.columns = new_columns
+    return df
+
+
 def normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
     new_cols = []
     for c in df.columns:
@@ -355,9 +403,13 @@ def process_trial(trial: Dict[str, Path], output_root: Path, canonical: bool, un
         ok = run_canonical_conversion_if_available(model_path, motion_sto, imu_csv, imu_out, unilateral, unit, max_frames)
         if not ok:
             df_raw = read_csv_flexible(imu_csv)
+            # Standardize segment names (trunk -> pelvis) for consistency
+            df_raw = standardize_segment_names(df_raw)
             write_csv_normalized(df_raw, imu_out)
     else:
         df_raw = read_csv_flexible(imu_csv)
+        # Standardize segment names (trunk -> pelvis) for consistency
+        df_raw = standardize_segment_names(df_raw)
         write_csv_normalized(df_raw, imu_out)
 
     # joint_moment.csv: choose CSV in condition-level id and normalize headers
