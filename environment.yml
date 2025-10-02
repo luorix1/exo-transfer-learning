@@ -15,6 +15,7 @@ dependencies:
   - tqdm
   - colorama
   - tornado
+  - pyyaml
   # PyTorch (CPU on macOS; MPS is bundled by default when available)
   - pytorch
   - torchvision
@@ -29,3 +30,4 @@ dependencies:
       - xmltodict==0.14.2
       - setuptools==80.9.0
       - wheel==0.45.1
+      - wandb>=0.16.0
