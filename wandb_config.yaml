@@ -1,0 +1,8 @@
+default_tags:
+- tcn
+- joint_moment
+- imu
+- biomechanics
+entity: jinwoohw
+notes: TCN model for joint moment prediction from IMU data
+project: transfer-learning
