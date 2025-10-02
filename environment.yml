@@ -1,14 +1,14 @@
 name: transfer-learning
 channels:
-  - pytorch
   - conda-forge
   - defaults
 dependencies:
   - python=3.12
-  # Core scientific stack (prefer conda for compiled libs)
-  - numpy=1.26
-  - scipy=1.16
-  - matplotlib=3.10
+  # Core scientific stack with OpenBLAS (no MKL)
+  - nomkl
+  - numpy
+  - scipy
+  - matplotlib
   - pandas
   - h5py
   - pillow
@@ -16,7 +16,9 @@ dependencies:
   - colorama
   - tornado
   - pyyaml
-  # PyTorch (CPU on macOS; MPS is bundled by default when available)
+  - scikit-learn
+  - numexpr
+  # PyTorch from conda-forge (CPU, generic build with OpenBLAS)
   - pytorch
   - torchvision
   - torchaudio
