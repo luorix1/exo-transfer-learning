@@ -108,6 +108,147 @@ def write_csv_normalized(df: pd.DataFrame, out_path: Path) -> None:
     df_norm.to_csv(out_path, index=False)
 
 
+def load_subject_info(subject_dir: Path, subject_name: Optional[str] = None) -> dict:
+    """Load subject information including bodyweight for normalization.
+
+    This function is robust to different dataset layouts:
+    - Subject-level files: SubjectInfo.csv, subject_info.csv, info.csv, metadata.csv
+    - Nested metadata inside subject directory (searched up to 2 levels deep)
+    - Dataset-level demographics table with a subject identifier column
+
+    It attempts multiple parsing strategies to extract bodyweight (kg).
+    """
+    subject_info: Dict[str, float] = {}
+
+    def try_extract_bodyweight(df: pd.DataFrame) -> Optional[float]:
+        # Strategy 1: direct numeric column with weight keywords
+        weight_cols = [c for c in df.columns if any(k in str(c).lower() for k in ['weight', 'mass', 'bodyweight', 'body_mass'])]
+        for c in weight_cols:
+            series = pd.to_numeric(df[c], errors='coerce')
+            # Prefer single-row tables
+            val = series.dropna()
+            if not val.empty:
+                w = float(val.iloc[0])
+                if 20 <= w <= 200:
+                    return w
+        # Strategy 2: key-value pairs (first col key, second col value)
+        if df.shape[1] >= 2:
+            key_col = df.columns[0]
+            val_col = df.columns[1]
+            keys = df[key_col].astype(str).str.lower()
+            mask = keys.str.contains('weight') | keys.str.contains('mass') | keys.str.contains('bodyweight') | keys.str.contains('body_mass')
+            rows = df[mask]
+            if not rows.empty:
+                series = pd.to_numeric(rows[val_col], errors='coerce').dropna()
+                if not series.empty:
+                    w = float(series.iloc[0])
+                    if 20 <= w <= 200:
+                        return w
+        return None
+
+    def read_info_csv(path: Path) -> Optional[pd.DataFrame]:
+        try:
+            return read_csv_flexible(path)
+        except Exception:
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                return None
+
+    # 1) Obvious filenames in subject directory
+    candidate_files: List[Path] = [
+        subject_dir / "SubjectInfo.csv",
+        subject_dir / "subject_info.csv",
+        subject_dir / "info.csv",
+        subject_dir / "metadata.csv",
+    ]
+
+    # 2) Nested files inside subject directory (one or two levels deep)
+    for pattern in ["**/SubjectInfo.csv", "**/subject_info.csv", "**/*metadata*.csv", "**/*demo*graph*.csv"]:
+        candidate_files.extend(subject_dir.glob(pattern))
+
+    # 3) Dataset-level tables that may include per-subject rows
+    dataset_root = subject_dir.parent
+    for pattern in ["SubjectInfo.csv", "subject_info.csv", "*metadata*.csv", "*demo*graph*.csv"]:
+        candidate_files.extend(dataset_root.glob(pattern))
+
+    seen: set = set()
+    for info_file in candidate_files:
+        if not info_file.exists():
+            continue
+        if str(info_file) in seen:
+            continue
+        seen.add(str(info_file))
+        df_info = read_info_csv(info_file)
+        if df_info is None or df_info.empty:
+            continue
+
+        # If table contains subject identifier columns, filter to target subject
+        if subject_name is not None:
+            subj_cols = [c for c in df_info.columns if any(k in str(c).lower() for k in ['subject', 'id', 'participant'])]
+            if subj_cols:
+                # Try to match by subject directory name (case-insensitive, ignoring non-alnum)
+                def norm(s: str) -> str:
+                    return re.sub(r"[^0-9a-zA-Z]", "", s).lower()
+                target = norm(subject_name)
+                mask = False
+                for c in subj_cols:
+                    mask = mask | (df_info[c].astype(str).map(norm) == target)
+                df_filtered = df_info[mask]
+                if not df_filtered.empty:
+                    w = try_extract_bodyweight(df_filtered)
+                    if w is not None:
+                        subject_info['bodyweight'] = w
+                        print(f"[info] Loaded bodyweight: {w} kg from {info_file}")
+                        return subject_info
+
+        # Fallback: attempt extraction from the whole table
+        w = try_extract_bodyweight(df_info)
+        if w is not None:
+            subject_info['bodyweight'] = w
+            print(f"[info] Loaded bodyweight: {w} kg from {info_file}")
+            return subject_info
+
+    return subject_info
+
+
+def normalize_joint_moments(df: pd.DataFrame, subject_info: dict) -> pd.DataFrame:
+    """Normalize joint moment columns ("*_moment") by bodyweight from SubjectInfo.csv.
+
+    - Expects bodyweight in kilograms within subject_info
+    - Normalizes ONLY columns whose names match "*_moment" (case-insensitive)
+    - Safely coerces non-numeric values to NaN before division
+    """
+    bodyweight = subject_info.get('bodyweight')
+    if bodyweight is None or bodyweight <= 0:
+        print("[warn] Skipping moment normalization: missing or invalid bodyweight")
+        return df
+
+    df_out = df.copy()
+    # Header normalization may not be applied yet for the label df, so match case-insensitively
+    candidate_cols = []
+    for col in df_out.columns:
+        col_l = str(col).lower()
+        # Match pattern "*_moment" strictly (underscore + moment at end) per requirement
+        if col_l.endswith("_moment"):
+            candidate_cols.append(col)
+
+    if not candidate_cols:
+        # Fallback: any column containing 'moment'
+        candidate_cols = [col for col in df_out.columns if 'moment' in str(col).lower()]
+
+    if not candidate_cols:
+        print("[warn] No moment columns found to normalize")
+        return df
+
+    for col in candidate_cols:
+        series = pd.to_numeric(df_out[col], errors='coerce')
+        df_out[col] = series / float(bodyweight)
+        print(f"[info] Normalized {col} by bodyweight ({bodyweight} kg)")
+
+    return df_out
+
+
 # ---------------------- Trial discovery ----------------------
 
 def gather_trials(input_root: Path, allowed_conditions: List[str]) -> List[Dict[str, Path]]:
@@ -192,7 +333,7 @@ def run_canonical_conversion_if_available(
 
 # ---------------------- Per-trial processing ----------------------
 
-def process_trial(trial: Dict[str, Path], output_root: Path, canonical: bool, unilateral: bool, unit: str, max_frames: int) -> Optional[Path]:
+def process_trial(trial: Dict[str, Path], output_root: Path, canonical: bool, unilateral: bool, unit: str, max_frames: int, normalize_moment: bool) -> Optional[Path]:
     subject = trial["subject"]
     cond_dir = trial["condition_dir"]
     imu_csv = trial["imu_csv"]
@@ -223,6 +364,11 @@ def process_trial(trial: Dict[str, Path], output_root: Path, canonical: bool, un
     out_label = label_dir / "joint_moment.csv"
     if id_csv is not None and id_csv.suffix.lower() == ".csv":
         df_label = read_csv_flexible(id_csv)
+        # Apply bodyweight normalization if requested
+        if normalize_moment:
+            subject_dir = cond_dir.parent.parent  # Go up to subject level
+            subject_info = load_subject_info(subject_dir)
+            df_label = normalize_joint_moments(df_label, subject_info)
         write_csv_normalized(df_label, out_label)
     else:
         id_dir = cond_dir / "id"
@@ -230,6 +376,11 @@ def process_trial(trial: Dict[str, Path], output_root: Path, canonical: bool, un
         picked = best_match_by_stem(trial_name, candidates) if candidates else None
         if picked is not None:
             df_label = read_csv_flexible(picked)
+            # Apply bodyweight normalization if requested
+            if normalize_moment:
+                subject_dir = cond_dir.parent.parent  # Go up to subject level
+                subject_info = load_subject_info(subject_dir)
+                df_label = normalize_joint_moments(df_label, subject_info)
             write_csv_normalized(df_label, out_label)
         else:
             print(f"[warn] No ID CSV found for trial {trial_name} in {id_dir}")
@@ -248,6 +399,7 @@ def main():
     parser.add_argument("--unilateral", action="store_true", help="Assume unilateral IMU naming (map to right side)")
     parser.add_argument("--unit", choices=["rad", "deg"], default="rad", help="Unit of IMU gyro in source CSV")
     parser.add_argument("--max-frames", type=int, default=2000)
+    parser.add_argument("--normalize-moment", action="store_true", help="Normalize joint moments by bodyweight (requires SubjectInfo.csv)")
     args = parser.parse_args()
 
     input_root = Path(args.input_root)
@@ -269,6 +421,7 @@ def main():
             unilateral=args.unilateral,
             unit=args.unit,
             max_frames=args.max_frames,
+            normalize_moment=args.normalize_moment,
         )
         print(f"✓ {t['subject']} {t['condition_dir'].name} {Path(t['imu_csv']).stem} -> {out_dir}")
         processed += 1
