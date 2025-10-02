@@ -4,6 +4,9 @@ Testing script for TCN-based joint moment prediction from IMU data.
 """
 
 import os
+os.environ["MKL_VERBOSE"] = "0"
+os.environ["MKL_DISABLE_FAST_MM"] = "1"
+import json
 import torch
 import argparse
 import numpy as np
@@ -15,6 +18,7 @@ from model.tcn import TCNModel
 from data.dataloader import DataHandler
 from trainer import Trainer
 from loss import JointMomentLoss
+from config.hyperparameters import DEFAULT_TCN_CONFIG
 
 
 def load_model(model_path: str, config: dict, device: torch.device):
@@ -35,7 +39,8 @@ def load_normalization_params(save_dir: str):
 
 
 def predict_on_trial(model, trial_path: str, input_mean: np.ndarray, input_std: np.ndarray,
-                    label_mean: np.ndarray, label_std: np.ndarray, window_size: int, device: torch.device):
+                    label_mean: np.ndarray, label_std: np.ndarray, window_size: int, device: torch.device,
+                    imu_segments: list):
     """Make predictions on a single trial."""
     # Load IMU data
     imu_path = os.path.join(trial_path, 'Input', 'imu_data.csv')
@@ -46,27 +51,55 @@ def predict_on_trial(model, trial_path: str, input_mean: np.ndarray, input_std: 
         return None, None, None
     
     # Load data
-    imu_df = pd.read_csv(imu_path)
-    label_df = pd.read_csv(label_path)
+    try:
+        imu_df = pd.read_csv(imu_path, sep=None, engine='python', on_bad_lines='skip')
+        label_df = pd.read_csv(label_path, sep=None, engine='python', on_bad_lines='skip')
+    except:
+        imu_df = pd.read_csv(imu_path, sep=',', on_bad_lines='skip')
+        label_df = pd.read_csv(label_path, sep=',', on_bad_lines='skip')
     
-    # Extract gyroscope data
+    # Extract gyroscope data based on configured IMU segments
     gyro_cols = [col for col in imu_df.columns if 'gyro' in col.lower()]
-    if len(gyro_cols) < 6:
-        print(f"Insufficient gyro channels in {trial_path}")
+    
+    # Configure based on imu_segments parameter
+    if len(imu_segments) == 1 and imu_segments[0].lower() in ['femur', 'thigh']:
+        # Single femur/thigh IMU mode (3 channels)
+        thigh_r_gyro = [col for col in gyro_cols if 'thigh_r' in col.lower() or 'femur_r' in col.lower()]
+        
+        if not thigh_r_gyro or len(thigh_r_gyro) < 3:
+            print(f"Required IMU segment 'femur/thigh' not found in {trial_path}")
+            print(f"  Available gyro columns: {gyro_cols}")
+            return None, None, None
+        
+        input_cols = thigh_r_gyro[:3]
+        input_data = imu_df[input_cols].values
+    
+    elif len(imu_segments) == 2:
+        # Dual IMU mode
+        seg1 = imu_segments[0].lower()
+        seg2 = imu_segments[1].lower()
+        
+        pelvis_gyro = [col for col in gyro_cols if 'pelvis' in col.lower()]
+        thigh_r_gyro = [col for col in gyro_cols if 'thigh_r' in col.lower() or 'femur_r' in col.lower()]
+        
+        if 'pelvis' in [seg1, seg2] and ('femur' in [seg1, seg2] or 'thigh' in [seg1, seg2]):
+            if not pelvis_gyro or len(pelvis_gyro) < 3:
+                print(f"Required IMU segment 'pelvis' not found in {trial_path}")
+                print(f"  Available gyro columns: {gyro_cols}")
+                return None, None, None
+            if not thigh_r_gyro or len(thigh_r_gyro) < 3:
+                print(f"Required IMU segment 'femur/thigh' not found in {trial_path}")
+                print(f"  Available gyro columns: {gyro_cols}")
+                return None, None, None
+            
+            input_cols = pelvis_gyro[:3] + thigh_r_gyro[:3]
+            input_data = imu_df[input_cols].values
+        else:
+            print(f"Unsupported IMU segment configuration: {imu_segments}")
+            return None, None, None
+    else:
+        print(f"Invalid number of IMU segments: {len(imu_segments)}")
         return None, None, None
-    
-    # Get pelvis and thigh gyro data
-    pelvis_gyro = [col for col in gyro_cols if 'pelvis' in col.lower()]
-    thigh_r_gyro = [col for col in gyro_cols if 'thigh_r' in col.lower() or 'femur_r' in col.lower()]
-    thigh_l_gyro = [col for col in gyro_cols if 'thigh_l' in col.lower() or 'femur_l' in col.lower()]
-    
-    if not (pelvis_gyro and thigh_r_gyro and thigh_l_gyro):
-        print(f"Missing required gyro channels in {trial_path}")
-        return None, None, None
-    
-    # Combine pelvis and thigh gyro data
-    input_cols = pelvis_gyro + thigh_r_gyro
-    input_data = imu_df[input_cols].values
     
     # Normalize input data
     input_data = (input_data - input_mean) / input_std
@@ -83,17 +116,34 @@ def predict_on_trial(model, trial_path: str, input_mean: np.ndarray, input_std: 
             pred = model(window_tensor)
             predictions.append(pred.cpu().numpy())
     
-    # Get corresponding true labels
-    hip_moment_cols = [col for col in label_df.columns if 'hip' in col.lower() and 'moment' in col.lower()]
-    if len(hip_moment_cols) >= 2:
-        hip_r_col = [col for col in hip_moment_cols if 'r' in col.lower() or 'right' in col.lower()]
-        hip_l_col = [col for col in hip_moment_cols if 'l' in col.lower() or 'left' in col.lower()]
-        
-        if hip_r_col and hip_l_col:
-            true_data = label_df[hip_r_col + hip_l_col].values
-            # Get labels corresponding to the last time point of each window
-            for i in range(len(input_data) - window_size + 1):
-                true_labels.append(true_data[i + window_size - 1])
+    # Get corresponding true labels (unilateral: use right hip flexion moment)
+    # Look for hip_flexion_r_moment first
+    hip_flexion_r_col = [col for col in label_df.columns 
+                        if 'hip_flexion_r_moment' in col.lower()]
+    
+    if hip_flexion_r_col:
+        true_data = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
+        # Get labels corresponding to the last time point of each window
+        for i in range(len(input_data) - window_size + 1):
+            true_labels.append(true_data[i + window_size - 1])
+    else:
+        # Fallback: try generic hip moment columns
+        hip_moment_cols = [col for col in label_df.columns 
+                          if 'hip' in col.lower() and 'moment' in col.lower()]
+        if hip_moment_cols:
+            # Use right hip moment for unilateral model
+            hip_r_col = [col for col in hip_moment_cols 
+                        if 'r' in col.lower() or 'right' in col.lower()]
+            
+            if hip_r_col:
+                true_data = label_df[hip_r_col[0]].values.reshape(-1, 1)
+                for i in range(len(input_data) - window_size + 1):
+                    true_labels.append(true_data[i + window_size - 1])
+            elif len(hip_moment_cols) == 1:
+                # Fallback: use single moment column
+                true_data = label_df[hip_moment_cols[0]].values.reshape(-1, 1)
+                for i in range(len(input_data) - window_size + 1):
+                    true_labels.append(true_data[i + window_size - 1])
     
     if not predictions or not true_labels:
         return None, None, None
@@ -109,26 +159,52 @@ def predict_on_trial(model, trial_path: str, input_mean: np.ndarray, input_std: 
 
 
 def evaluate_model(model_path: str, data_root: str, save_dir: str, subjects: list, 
-                   conditions: list, window_size: int, device: torch.device):
+                   conditions: list, window_size: int, device: torch.device, imu_segments: list):
     """Evaluate model on test subjects."""
     
     # Load normalization parameters
     input_mean, input_std, label_mean, label_std = load_normalization_params(save_dir)
     
-    # Load model configuration (you might want to save this during training)
-    config = {
-        'input_size': 6,
-        'output_size': 2,
-        'num_channels': [64, 64, 32, 32],
-        'kernel_size': 2,
-        'number_of_layers': 2,
-        'dropout': 0.2,
-        'dilations': [1, 2, 4, 8],
-        'window_size': window_size,
-    }
+    # Try to load saved config, otherwise use default with provided parameters
+    config_path = os.path.join(save_dir, 'config.json')
+    if os.path.exists(config_path):
+        print(f"Loading configuration from {config_path}")
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        # Override window_size if provided
+        if window_size is not None and window_size != config.get('window_size'):
+            print(f"Overriding window_size: {config.get('window_size')} -> {window_size}")
+            config['window_size'] = window_size
+    else:
+        print(f"Config file not found at {config_path}, using default config with provided parameters")
+        
+        # Use provided imu_segments or default
+        if imu_segments is None:
+            imu_segments = ['pelvis', 'femur']
+            print(f"Using default imu_segments: {imu_segments}")
+        
+        # Auto-adjust input_size based on IMU segments
+        if len(imu_segments) == 1 and imu_segments[0].lower() in ['femur', 'thigh']:
+            input_size = 3  # Single IMU: 3 gyro channels
+        else:
+            input_size = 6  # Dual IMU: 6 gyro channels
+        
+        # Use provided window_size or default
+        if window_size is None:
+            window_size = 100
+            print(f"Using default window_size: {window_size}")
+        
+        # Load model configuration from default config file
+        config = DEFAULT_TCN_CONFIG.copy()
+        config['input_size'] = input_size
+        config['output_size'] = 1  # Unilateral training: single hip moment output
+        config['window_size'] = window_size
     
     # Load model
     model = load_model(model_path, config, device)
+    
+    # Get imu_segments from config or use provided value
+    config_imu_segments = config.get('imu_segments', imu_segments if imu_segments else ['pelvis', 'femur'])
     
     all_predictions = []
     all_true_labels = []
@@ -156,7 +232,7 @@ def evaluate_model(model_path: str, data_root: str, save_dir: str, subjects: lis
                 
                 pred, true, input_data = predict_on_trial(
                     model, trial_path, input_mean, input_std, 
-                    label_mean, label_std, window_size, device
+                    label_mean, label_std, config['window_size'], device, config_imu_segments
                 )
                 
                 if pred is not None:
@@ -182,17 +258,21 @@ def evaluate_model(model_path: str, data_root: str, save_dir: str, subjects: lis
     print(f"MAE: {mae:.4f} N-m/kg")
     print(f"Number of samples: {len(all_predictions)}")
     
-    # Plot predictions vs ground truth
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    # Plot predictions vs ground truth (unilateral: single hip moment)
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
     
-    for i, joint in enumerate(['Right Hip', 'Left Hip']):
-        axes[i].scatter(all_true_labels[:, i], all_predictions[:, i], alpha=0.5)
-        axes[i].plot([all_true_labels[:, i].min(), all_true_labels[:, i].max()], 
-                    [all_true_labels[:, i].min(), all_true_labels[:, i].max()], 'r--')
-        axes[i].set_xlabel(f'True {joint} Moment (N-m/kg)')
-        axes[i].set_ylabel(f'Predicted {joint} Moment (N-m/kg)')
-        axes[i].set_title(f'{joint} Moment Prediction')
-        axes[i].grid(True)
+    # Flatten arrays for plotting
+    true_flat = all_true_labels.flatten()
+    pred_flat = all_predictions.flatten()
+    
+    ax.scatter(true_flat, pred_flat, alpha=0.5)
+    ax.plot([true_flat.min(), true_flat.max()], 
+            [true_flat.min(), true_flat.max()], 'r--', label='Perfect Prediction')
+    ax.set_xlabel('True Hip Moment (N-m/kg)')
+    ax.set_ylabel('Predicted Hip Moment (N-m/kg)')
+    ax.set_title('Hip Moment Prediction (Unilateral Model)')
+    ax.legend()
+    ax.grid(True)
     
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, 'evaluation_plots.png'), dpi=300, bbox_inches='tight')
@@ -200,11 +280,8 @@ def evaluate_model(model_path: str, data_root: str, save_dir: str, subjects: lis
     
     # Save detailed results
     results_df = pd.DataFrame({
-        'trial': trial_names * len(all_predictions) if len(trial_names) == 1 else [name for name in trial_names for _ in range(len(all_predictions) // len(trial_names))],
-        'true_right_hip': all_true_labels[:, 0],
-        'pred_right_hip': all_predictions[:, 0],
-        'true_left_hip': all_true_labels[:, 1],
-        'pred_left_hip': all_predictions[:, 1],
+        'true_hip_moment': true_flat,
+        'pred_hip_moment': pred_flat,
     })
     
     results_df.to_csv(os.path.join(save_dir, 'evaluation_results.csv'), index=False)
@@ -225,8 +302,10 @@ def main():
                        help='Test subjects')
     parser.add_argument('--conditions', nargs='+', default=['levelground'],
                        help='Conditions to test on')
-    parser.add_argument('--window_size', type=int, default=100,
-                       help='Window size for temporal sequences')
+    parser.add_argument('--imu_segments', nargs='+', default=None,
+                       help='IMU segments to use (optional, will use config.json if available): ["femur"] for single thigh IMU (3 channels), ["pelvis", "femur"] for dual (6 channels)')
+    parser.add_argument('--window_size', type=int, default=None,
+                       help='Window size for temporal sequences (optional, will use config.json if available)')
     
     args = parser.parse_args()
     
@@ -253,7 +332,8 @@ def main():
         subjects=args.test_subjects,
         conditions=args.conditions,
         window_size=args.window_size,
-        device=device
+        device=device,
+        imu_segments=args.imu_segments
     )
 
 

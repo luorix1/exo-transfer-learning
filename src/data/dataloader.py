@@ -19,7 +19,7 @@ class DataHandler:
         self.dataset_proportion = hyperparam_config["dataset_proportion"]
         self.transfer_learning = hyperparam_config["transfer_learning"]
         self.pretrained_model_path = pretrained_model_path
-        self.side = hyperparam_config.get('side', 'all')  # 'right', 'left', 'all'
+        self.imu_segments = hyperparam_config.get("imu_segments", ["pelvis", "femur"])
             
         # Placeholder for data
         self.train_data = None
@@ -55,7 +55,8 @@ class DataHandler:
             input_mean=self.input_mean,
             input_std=self.input_std,
             label_mean=self.label_mean,
-            label_std=self.label_std
+            label_std=self.label_std,
+            imu_segments=self.imu_segments
         )
         
         # Retrieve mean and std from training data
@@ -72,7 +73,8 @@ class DataHandler:
             conditions=train_data_condition,  # Use the same conditions as training data
             window_size=self.window_size,
             data_type="test_data",
-            dataset_proportion=self.dataset_proportion
+            dataset_proportion=self.dataset_proportion,
+            imu_segments=self.imu_segments
         )
         # Replace the mean and std of test data with that of training data
         self.test_data.input_mean = self.input_mean
@@ -125,7 +127,6 @@ class DataHandler:
                 dataset=train_subset,
                 num_workers=self.num_workers,
                 batch_size=self.batch_size,
-                pin_memory=True,
                 shuffle=True
             )
             
@@ -133,7 +134,6 @@ class DataHandler:
                 dataset=val_subset,
                 num_workers=self.num_workers,
                 batch_size=self.batch_size,
-                pin_memory=True,
                 shuffle=False
             )
             return train_loader, val_loader
@@ -144,7 +144,6 @@ class DataHandler:
                     dataset=self.test_data,
                     num_workers=self.num_workers,
                     batch_size=self.batch_size,
-                    pin_memory=True,
                     shuffle=False
                 )
             
@@ -158,7 +157,7 @@ class LoadData(Dataset):
                  window_size: int, data_type: str, dataset_proportion: Optional[float] = None,
                  input_mean: Optional[np.ndarray] = None, input_std: Optional[np.ndarray] = None,
                  label_mean: Optional[np.ndarray] = None, label_std: Optional[np.ndarray] = None,
-                 normalize: bool = True):
+                 normalize: bool = True, imu_segments: Optional[List[str]] = None):
         self.window_size = window_size
         self.input_list = []
         self.label_list = []
@@ -166,6 +165,8 @@ class LoadData(Dataset):
         self.normalize = normalize
         self.dataset_proportion = dataset_proportion
         self.subject_data_length = []
+        # Default to femur+pelvis if not specified
+        self.imu_segments = imu_segments if imu_segments is not None else ["pelvis", "femur"]
 
         for subject_num, subject in enumerate(partitions):  # Multiple partitions
             self.subject_data_length.append(0)  # Append 0 for each subject
@@ -207,145 +208,227 @@ class LoadData(Dataset):
                             except:
                                 df = pd.read_csv(csv_path, sep=',', on_bad_lines='skip')
                             
-                            # Extract gyroscope data (canonical format has normalized column names)
-                            gyro_cols = [col for col in df.columns if 'gyro' in col.lower()]
-                            if len(gyro_cols) >= 6:  # Need at least 6 gyro channels (pelvis, thigh_r, thigh_l)
-                                # Right side: pelvis + thigh_r gyro
-                                pelvis_gyro = [col for col in gyro_cols if 'pelvis' in col.lower()]
-                                thigh_r_gyro = [col for col in gyro_cols if 'thigh_r' in col.lower() or 'femur_r' in col.lower()]
+                        # Extract gyroscope data based on configured IMU segments
+                        gyro_cols = [col for col in df.columns if 'gyro' in col.lower()]
+                        
+                        right_cols = []
+                        left_cols = []
+                        
+                        # Configure based on imu_segments parameter
+                        if len(self.imu_segments) == 1 and self.imu_segments[0].lower() in ['femur', 'thigh']:
+                            # Single femur/thigh IMU mode (3 channels)
+                            thigh_r_gyro = [col for col in gyro_cols if 'thigh_r' in col.lower() or 'femur_r' in col.lower()]
+                            thigh_l_gyro = [col for col in gyro_cols if 'thigh_l' in col.lower() or 'femur_l' in col.lower()]
+                            
+                            if not thigh_r_gyro or len(thigh_r_gyro) < 3:
+                                raise ValueError(
+                                    f"Required IMU segment 'femur/thigh' not found in {csv_path}\n"
+                                    f"Available gyro columns: {gyro_cols}\n"
+                                    f"Make sure your data contains 'thigh_r' or 'femur_r' gyro data."
+                                )
+                            
+                            right_cols = thigh_r_gyro[:3]
+                            # If left exists, use it; otherwise set to empty (will be None later)
+                            if thigh_l_gyro and len(thigh_l_gyro) >= 3:
+                                left_cols = thigh_l_gyro[:3]
+                        
+                        elif len(self.imu_segments) == 2:
+                            # Dual IMU mode - check which segments are requested
+                            seg1 = self.imu_segments[0].lower()
+                            seg2 = self.imu_segments[1].lower()
+                            
+                            # Find pelvis gyro
+                            pelvis_gyro = [col for col in gyro_cols if 'pelvis' in col.lower()]
+                            # Find femur/thigh gyro
+                            thigh_r_gyro = [col for col in gyro_cols if 'thigh_r' in col.lower() or 'femur_r' in col.lower()]
+                            thigh_l_gyro = [col for col in gyro_cols if 'thigh_l' in col.lower() or 'femur_l' in col.lower()]
+                            
+                            # Verify we have the required segments
+                            if 'pelvis' in [seg1, seg2] and ('femur' in [seg1, seg2] or 'thigh' in [seg1, seg2]):
+                                if not pelvis_gyro or len(pelvis_gyro) < 3:
+                                    raise ValueError(
+                                        f"Required IMU segment 'pelvis' not found in {csv_path}\n"
+                                        f"Available gyro columns: {gyro_cols}\n"
+                                        f"Requested segments: {self.imu_segments}"
+                                    )
+                                if not thigh_r_gyro or len(thigh_r_gyro) < 3:
+                                    raise ValueError(
+                                        f"Required IMU segment 'femur/thigh' not found in {csv_path}\n"
+                                        f"Available gyro columns: {gyro_cols}\n"
+                                        f"Requested segments: {self.imu_segments}"
+                                    )
                                 
-                                if pelvis_gyro and thigh_r_gyro:
-                                    right_cols = pelvis_gyro + thigh_r_gyro
-                                    input_df_R = df[right_cols].values
-                                    
-                                    # Left side: pelvis + thigh_l gyro (flip signs for left)
-                                    thigh_l_gyro = [col for col in gyro_cols if 'thigh_l' in col.lower() or 'femur_l' in col.lower()]
-                                    if thigh_l_gyro:
-                                        left_cols = pelvis_gyro + thigh_l_gyro
-                                        input_df_L = df[left_cols].values
-                                        # Flip signs for left side gyro (Y and Z axes)
-                                        input_df_L[:, [1, 3, 5]] *= -1
-                                    else:
-                                        # If no left thigh data, use right side data flipped
-                                        input_df_L = input_df_R.copy()
-                                        input_df_L[:, [1, 3, 5]] *= -1
-                                else:
-                                    continue
+                                right_cols = pelvis_gyro[:3] + thigh_r_gyro[:3]
+                                if thigh_l_gyro and len(thigh_l_gyro) >= 3:
+                                    left_cols = pelvis_gyro[:3] + thigh_l_gyro[:3]
                             else:
-                                continue
-
+                                raise ValueError(
+                                    f"Unsupported IMU segment configuration: {self.imu_segments}\n"
+                                    f"Supported configurations:\n"
+                                    f"  - ['femur'] or ['thigh'] for single IMU\n"
+                                    f"  - ['pelvis', 'femur'] or ['pelvis', 'thigh'] for dual IMU"
+                                )
                         else:
-                            continue
+                            raise ValueError(
+                                f"Invalid number of IMU segments: {len(self.imu_segments)}\n"
+                                f"Supported: 1 segment ['femur'] or 2 segments ['pelvis', 'femur']"
+                            )
+
+                        if not right_cols:
+                            raise ValueError(
+                                f"Failed to extract right side IMU data from {csv_path}\n"
+                                f"Requested segments: {self.imu_segments}\n"
+                                f"Available gyro columns: {gyro_cols}"
+                            )
+
+                        input_df_R = df[right_cols].values
+                        if left_cols:
+                            input_df_L = df[left_cols].values
+                            # Flip signs for left side gyro (Y-axis for canonical frame)
+                            if input_df_L.shape[1] >= 6:
+                                input_df_L[:, [1, 4]] *= -1  # Y-axes of both sensors
+                            elif input_df_L.shape[1] >= 3:
+                                input_df_L[:, 1] *= -1  # Y-axis only
+                        else:
+                            # If no left columns, set to None - we'll only use right side data
+                            input_df_L = None
 
                         # Horizontally stack all input data
                         if input_buffer_R is None:
                             input_buffer_R = input_df_R
                         else:
                             input_buffer_R = np.hstack((input_buffer_R, input_df_R))
-                        if input_buffer_L is None:
-                            input_buffer_L = input_df_L
-                        else:
-                            input_buffer_L = np.hstack((input_buffer_L, input_df_L))
+                        
+                        # Only stack left if it exists
+                        if input_df_L is not None:
+                            if input_buffer_L is None:
+                                input_buffer_L = input_df_L
+                            else:
+                                input_buffer_L = np.hstack((input_buffer_L, input_df_L))
 
-                    if input_buffer_R is None or input_buffer_L is None:
+                    # Must have at least right side data
+                    if input_buffer_R is None:
                         continue
 
-                    # Segment train data and test data based on dataset_proportion
-                    input_time_sec = int(input_buffer_R.shape[0]/100)  # Extract recording time from input file by dividing 100 Hz
+                    # Load and label data file (joint moments)
+                    if not label_file_names:
+                        continue
+                        
+                    label_file_path = os.path.join(label_file_dir, label_file_names[0])
+                    try:
+                        label_df = pd.read_csv(label_file_path, sep=None, engine='python', on_bad_lines='skip')
+                    except:
+                        label_df = pd.read_csv(label_file_path, sep=',', on_bad_lines='skip')
                     
-                    if self.data_type == "train_data":
-                        input_buffer_R = input_buffer_R[:int(input_buffer_R.shape[0]* self.dataset_proportion), :]
-                        input_buffer_L = input_buffer_L[:int(input_buffer_L.shape[0]* self.dataset_proportion), :]
-                    elif self.data_type == "train_data_transfer_learning":
-                        input_buffer_R = input_buffer_R[:int(input_buffer_R.shape[0]* self.dataset_proportion), :]
-                        input_buffer_L = input_buffer_L[:int(input_buffer_L.shape[0]* self.dataset_proportion), :]
-                    elif self.data_type == "test_data":
-                        input_buffer_R = input_buffer_R[:int(input_buffer_R.shape[0]* self.dataset_proportion), :]
-                        input_buffer_L = input_buffer_L[:int(input_buffer_L.shape[0]* self.dataset_proportion), :]
+                    # Extract hip flexion moments (right and left)
+                    # Look for hip_flexion_r_moment and hip_flexion_l_moment
+                    hip_flexion_r_col = [col for col in label_df.columns 
+                                        if 'hip_flexion_r_moment' in col.lower()]
+                    hip_flexion_l_col = [col for col in label_df.columns 
+                                        if 'hip_flexion_l_moment' in col.lower()]
                     
-                    # Build input based on requested side
-                    if self.side == 'right':
-                        input_buffer = input_buffer_R
-                    elif self.side == 'left':
-                        input_buffer = input_buffer_L
+                    # Handle different cases: both sides or single moment
+                    label_buffer_R = None
+                    label_buffer_L = None
+                    
+                    if hip_flexion_r_col:
+                        label_buffer_R = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
+                    if hip_flexion_l_col:
+                        label_buffer_L = label_df[hip_flexion_l_col[0]].values.reshape(-1, 1)
+                    
+                    # If no hip flexion moments found, skip this trial
+                    if label_buffer_R is None and label_buffer_L is None:
+                        # Fallback: try generic hip moment columns
+                        hip_moment_cols = [col for col in label_df.columns 
+                                         if 'hip' in col.lower() and 'moment' in col.lower()]
+                        if hip_moment_cols:
+                            hip_r_col = [col for col in hip_moment_cols 
+                                       if 'r' in col.lower() or 'right' in col.lower()]
+                            hip_l_col = [col for col in hip_moment_cols 
+                                       if 'l' in col.lower() or 'left' in col.lower()]
+                            
+                            if hip_r_col:
+                                label_buffer_R = label_df[hip_r_col[0]].values.reshape(-1, 1)
+                            if hip_l_col:
+                                label_buffer_L = label_df[hip_l_col[0]].values.reshape(-1, 1)
+                        
+                        if label_buffer_R is None and label_buffer_L is None:
+                            continue
+                    
+                    # Process right side if we have both input and label
+                    if input_buffer_R is not None and label_buffer_R is not None:
+                        # Ensure input and label lengths match
+                        min_len_R = min(input_buffer_R.shape[0], label_buffer_R.shape[0])
+                        input_buffer_R = input_buffer_R[:min_len_R]
+                        label_buffer_R = label_buffer_R[:min_len_R]
+                        
+                        # Filter valid rows for RIGHT side
+                        valid_mask_R = (~np.isnan(input_buffer_R).any(axis=1)) & (~np.isnan(label_buffer_R).any(axis=1))
+                        input_buffer_R_clean = input_buffer_R[valid_mask_R]
+                        label_buffer_R_clean = label_buffer_R[valid_mask_R]
                     else:
-                        # both sides stacked (R first then L)
-                        input_buffer = np.vstack((input_buffer_R, input_buffer_L))
+                        input_buffer_R_clean = None
+                        label_buffer_R_clean = None
+                    
+                    # Process left side if we have both input and label
+                    if input_buffer_L is not None and label_buffer_L is not None:
+                        # Ensure input and label lengths match
+                        min_len_L = min(input_buffer_L.shape[0], label_buffer_L.shape[0])
+                        input_buffer_L = input_buffer_L[:min_len_L]
+                        label_buffer_L = label_buffer_L[:min_len_L]
+                        
+                        # Filter valid rows for LEFT side
+                        valid_mask_L = (~np.isnan(input_buffer_L).any(axis=1)) & (~np.isnan(label_buffer_L).any(axis=1))
+                        input_buffer_L_clean = input_buffer_L[valid_mask_L]
+                        label_buffer_L_clean = label_buffer_L[valid_mask_L]
+                    else:
+                        input_buffer_L_clean = None
+                        label_buffer_L_clean = None
+                    
+                    # Stack available data (unilateral training)
+                    if input_buffer_R_clean is not None and len(input_buffer_R_clean) > 0:
+                        if input_buffer_L_clean is not None and len(input_buffer_L_clean) > 0:
+                            # Both sides available - randomly stack
+                            R_side_first = np.random.randint(0, 2)
+                            if R_side_first:
+                                input_buffer = np.vstack((input_buffer_R_clean, input_buffer_L_clean))
+                                label_buffer = np.vstack((label_buffer_R_clean, label_buffer_L_clean))
+                            else:
+                                input_buffer = np.vstack((input_buffer_L_clean, input_buffer_R_clean))
+                                label_buffer = np.vstack((label_buffer_L_clean, label_buffer_R_clean))
+                        else:
+                            # Only right side available
+                            input_buffer = input_buffer_R_clean
+                            label_buffer = label_buffer_R_clean
+                    elif input_buffer_L_clean is not None and len(input_buffer_L_clean) > 0:
+                        # Only left side available
+                        input_buffer = input_buffer_L_clean
+                        label_buffer = label_buffer_L_clean
+                    else:
+                        # No valid data
+                        continue
 
                     self.input_list.append(input_buffer)
+                    self.label_list.append(label_buffer)
                     self.subject_data_length[subject_num] += input_buffer.shape[0]
-                    
-                    # Load and label data file (joint moments)
-                    if label_file_names:
-                        label_file_path = os.path.join(label_file_dir, label_file_names[0])
-                        try:
-                            label_df = pd.read_csv(label_file_path, sep=None, engine='python', on_bad_lines='skip')
-                        except:
-                            label_df = pd.read_csv(label_file_path, sep=',', on_bad_lines='skip')
-                        
-                        # Extract hip moments (right and left)
-                        hip_moment_cols = [col for col in label_df.columns if 'hip' in col.lower() and 'moment' in col.lower()]
-                        
-                        if len(hip_moment_cols) >= 1:
-                            # Find right and left hip moment columns
-                            hip_r_col = [col for col in hip_moment_cols if 'r' in col.lower() or 'right' in col.lower()]
-                            hip_l_col = [col for col in hip_moment_cols if 'l' in col.lower() or 'left' in col.lower()]
-                            
-                            # Handle different cases: both sides, only right, only left, or single moment
-                            if hip_r_col and hip_l_col:
-                                # Both sides available
-                                label_buffer = label_df[hip_r_col + hip_l_col].values
-                            elif hip_r_col and not hip_l_col:
-                                # Only right side - duplicate for left
-                                label_buffer = np.column_stack([label_df[hip_r_col].values, label_df[hip_r_col].values])
-                            elif hip_l_col and not hip_r_col:
-                                # Only left side - duplicate for right
-                                label_buffer = np.column_stack([label_df[hip_l_col].values, label_df[hip_l_col].values])
-                            elif len(hip_moment_cols) == 1:
-                                # Single moment column - assume it's right side, duplicate for left
-                                label_buffer = np.column_stack([label_df[hip_moment_cols[0]].values, label_df[hip_moment_cols[0]].values])
-                            else:
-                                continue
-                            
-                            # Segment labels based on dataset_proportion
-                            if self.data_type == "train_data":
-                                label_buffer = label_buffer[:int(label_buffer.shape[0]* self.dataset_proportion), :]
-                            elif self.data_type == "train_data_transfer_learning":
-                                label_buffer = label_buffer[:int(label_buffer.shape[0]* self.dataset_proportion), :]
-                            elif self.data_type == "test_data":
-                                label_buffer = label_buffer[:int(label_buffer.shape[0]* self.dataset_proportion), :]
-                            
-                            # Build labels based on requested side
-                            if self.side == 'right':
-                                label_buffer = label_buffer[:, 0:1]
-                            elif self.side == 'left':
-                                label_buffer = label_buffer[:, 1:2]
-                            else:
-                                # both sides
-                                label_buffer = label_buffer[:, 0:2]
-                            
-                            self.label_list.append(label_buffer)
-                        else:
-                            continue
-                    else:
-                        continue
             
             print(f"{subject} data length: {self.subject_data_length[subject_num]}")
 
         if not self.input_list or not self.label_list:
             raise ValueError("No valid data found in the specified partitions and conditions")
 
-        # Concatenate all data
+        # Concatenate all data (matching reference implementation)
         self.input = np.concatenate(self.input_list, axis=0)
         self.label = np.concatenate(self.label_list, axis=0)
 
         print(f'\ninput {self.data_type} dataset size: {np.shape(self.input)}')
         print(f'label {self.data_type} dataset size: {np.shape(self.label)}')
 
+        # Calculate total number of sequences (reference approach: no NaN filtering)
         self.length = len(self.input) - self.window_size + 1
         print(f"Total {self.data_type} sequences: {self.length}")
 
-        # Calculate mean and std using the entire dataset
+        # Calculate mean and std using the entire dataset (reference uses np.mean, not nanmean)
         self.input_mean = np.mean(self.input, axis=0)
         self.input_std = np.std(self.input, axis=0) + 1e-8
 

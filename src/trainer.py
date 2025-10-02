@@ -1,6 +1,8 @@
 import torch
 from tqdm.auto import tqdm
 import os
+os.environ["MKL_VERBOSE"] = "0"
+os.environ["MKL_DISABLE_FAST_MM"] = "1"
 import wandb
 import matplotlib.pyplot as plt
 import numpy as np
@@ -220,12 +222,14 @@ class Trainer:
         gc.collect()
         num_epochs = self.hyperparam_config['epochs']
         
+        # Get train/val split and create dataloaders once at the beginning
+        train_indices, val_indices = self.data_handler.get_train_val_indices()
+        train_loader, val_loader = self.data_handler.create_dataloaders(train_indices, val_indices)
+        test_loader = self.data_handler.create_dataloaders(test_indices=1)
+        
         for epoch in range(num_epochs):
             print("\nEpoch {}/{}".format(epoch+1, num_epochs))
             curr_lr = float(self.optimizer.param_groups[0]['lr'])
-
-            train_indices, val_indices = self.data_handler.get_train_val_indices()
-            train_loader, val_loader = self.data_handler.create_dataloaders(train_indices, val_indices)
 
             train_loss, train_rmse, train_acc = self.train_epoch(train_loader)
             val_loss, val_rmse, val_acc = self.eval_epoch(val_loader)
@@ -251,7 +255,6 @@ class Trainer:
                 self.patience_counter += 1
 
             # Plot predictions after each epoch
-            test_loader = self.data_handler.create_dataloaders(test_indices=1)
             self.plot_predictions(test_loader, num_samples=5000, epoch=epoch+1)
 
             test_loss, test_rmse, test_acc = self.eval_epoch(test_loader)
@@ -285,16 +288,22 @@ class Trainer:
                     'patience_counter': self.patience_counter,
                 })
         
-    def evaluate(self):
+        # Return test_loader for use in final evaluation
+        return test_loader
+        
+    def evaluate(self, test_loader=None):
         """Evaluate the model on test data."""
         # Load the best model
         self.model.load_state_dict(torch.load(os.path.join(self.save_dir, self.hyperparam_config['wandb_session_name'] + '.pt')))
-                
+        
+        # Create test_loader if not provided
+        if test_loader is None:
+            test_loader = self.data_handler.create_dataloaders(test_indices=1)
+        
         # Evaluate on Test Data
-        test_loader = self.data_handler.create_dataloaders(test_indices=1)
         test_loss, test_rmse, test_acc = self.eval_epoch(test_loader)
         
-        print("\nTest Loss {:.04f}\tRMSE {:.04f}".format(
+        print("\nFinal Test Loss {:.04f}\tRMSE {:.04f}".format(
             test_loss, test_rmse))
         
         test_metrics_file = os.path.join(self.save_dir, 'test_metrics.csv')
@@ -310,8 +319,8 @@ class Trainer:
                 'test_rmse': test_rmse,
             })
         
-        # Optionally, plot predictions using the best model
-        self.plot_predictions(test_loader, num_samples=5000, epoch='final')
+        # Plot predictions using the best model (larger sample)
+        self.plot_predictions(test_loader, num_samples=10000, epoch='final')
 
         # Plot final RMSE over epochs
         plt.figure()

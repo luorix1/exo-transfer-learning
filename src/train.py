@@ -5,6 +5,9 @@ Adapted for the Canonical dataset format.
 """
 
 import os
+os.environ["MKL_VERBOSE"] = "0"
+os.environ["MKL_DISABLE_FAST_MM"] = "1"
+import json
 import torch
 import wandb
 import argparse
@@ -17,39 +20,7 @@ from model.tcn import TCNModel
 from data.dataloader import DataHandler
 from trainer import Trainer
 from loss import JointMomentLoss
-
-
-def get_hyperparameter_config():
-    """Define hyperparameter configuration."""
-    return {
-        # Model architecture
-        'input_size': 6,  # 6 gyro channels (pelvis + thigh)
-        'output_size': 2,  # 2 hip moments (right and left)
-        'num_channels': [64, 64, 32, 32],
-        'kernel_size': 2,
-        'number_of_layers': 2,
-        'dropout': 0.2,
-        'dilations': [1, 2, 4, 8],
-        'window_size': 100,  # 1 second at 100Hz
-        
-        # Training parameters
-        'epochs': 100,
-        'batch_size': 32,
-        'learning_rate': 0.001,
-        'number_of_workers': 4,
-        'validation_split': 0.2,
-        'dataset_proportion': 1.0,
-        'transfer_learning': False,
-        
-        # Data paths
-        'data_root': '/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Canonical',
-        'save_dir': './checkpoints',
-        
-        # Wandb configuration
-        'wandb_session_name': 'tcn_joint_moment_prediction',
-        'wandb_project': 'transfer-learning',
-        'wandb_entity': None,
-    }
+from config.hyperparameters import DEFAULT_TCN_CONFIG
 
 
 def main():
@@ -67,6 +38,8 @@ def main():
                        help='Test subjects')
     parser.add_argument('--conditions', nargs='+', default=['levelground'],
                        help='Conditions to use for training')
+    parser.add_argument('--imu_segments', nargs='+', default=['pelvis', 'femur'],
+                       help='IMU segments to use: ["femur"] for single thigh IMU (3 channels), ["pelvis", "femur"] for dual (6 channels)')
     parser.add_argument('--epochs', type=int, default=100,
                        help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=32,
@@ -75,8 +48,6 @@ def main():
                        help='Learning rate')
     parser.add_argument('--window_size', type=int, default=100,
                        help='Window size for temporal sequences')
-    parser.add_argument('--side', type=str, choices=['right', 'left', 'all'], default='all',
-                       help='Which side to use: right-only, left-only, or both')
     parser.add_argument('--wandb_project', type=str, default='transfer-learning',
                        help='Wandb project name')
     parser.add_argument('--wandb_entity', type=str, default=None,
@@ -90,8 +61,14 @@ def main():
     
     args = parser.parse_args()
     
-    # Get hyperparameter configuration
-    config = get_hyperparameter_config()
+    # Get hyperparameter configuration from config file
+    config = DEFAULT_TCN_CONFIG.copy()
+    
+    # Auto-adjust input_size based on IMU segments
+    if len(args.imu_segments) == 1 and args.imu_segments[0].lower() in ['femur', 'thigh']:
+        input_size = 3  # Single IMU: 3 gyro channels
+    else:
+        input_size = 6  # Dual IMU: 6 gyro channels (pelvis + femur, or tibia + femur)
     
     # Update config with command line arguments
     config.update({
@@ -103,15 +80,12 @@ def main():
         'window_size': args.window_size,
         'wandb_project': args.wandb_project,
         'wandb_entity': args.wandb_entity,
-        'side': args.side,
+        'imu_segments': args.imu_segments,
+        'input_size': input_size,
     })
 
-    # Adjust output size based on side selection
-    if args.side in ['right', 'left']:
-        config['output_size'] = 1
-    else:
-        # both sides
-        config['output_size'] = 2
+    # Unilateral controller: always output_size=1, train using both sides stacked (reference style)
+    config['output_size'] = 1
     
     # Generate wandb run name if not provided
     if args.wandb_name is None:
@@ -122,6 +96,12 @@ def main():
     
     # Create save directory
     os.makedirs(args.save_dir, exist_ok=True)
+    
+    # Save configuration to experiment folder
+    config_save_path = os.path.join(args.save_dir, 'config.json')
+    with open(config_save_path, 'w') as f:
+        json.dump(config, f, indent=2)
+    print(f"Configuration saved to {config_save_path}")
     
     # Initialize wandb
     if not args.no_wandb:
@@ -182,7 +162,7 @@ def main():
     optimizer = Adam(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
     
     # Initialize scheduler (match reference with patience=1)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1)
     
     # Initialize trainer
     trainer = Trainer(
@@ -199,11 +179,11 @@ def main():
     
     # Train the model
     print("Starting training...")
-    trainer.train()
+    test_loader = trainer.train()
     
-    # Evaluate the model
-    print("Evaluating model...")
-    trainer.evaluate()
+    # Evaluate the model (reuse test_loader from training)
+    print("\nFinal evaluation on test set with best model...")
+    trainer.evaluate(test_loader)
     
     if wandb_run:
         wandb.finish()

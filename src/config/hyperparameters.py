@@ -6,8 +6,8 @@ Hyperparameter configurations for different model architectures and training sce
 # Based on reference biotorque controller training
 DEFAULT_TCN_CONFIG = {
     # Model architecture
-    'input_size': 6,  # 6 gyro channels (pelvis + thigh)
-    'output_size': 2,  # 2 hip moments (right and left)
+    'input_size': 6,  # Auto-adjusted based on imu_segments: 3 for single, 6 for dual
+    'output_size': 1,  # 1 hip moment (unilateral, trains with both sides stacked)
     'num_channels': [80, 80, 80, 80, 80],  # Match reference architecture
     'kernel_size': 5,  # Match reference
     'number_of_layers': 2,
@@ -19,14 +19,10 @@ DEFAULT_TCN_CONFIG = {
     'epochs': 30,  # Match reference
     'batch_size': 32,  # Match reference
     'learning_rate': 5e-6,  # Match reference init_lr
-    'number_of_workers': 10,  # Match reference
+    'number_of_workers': 0,  # Set to 0 for macOS (multiprocessing overhead), use 4-8 for Linux
     'validation_split': 0.1,  # Match reference
     'dataset_proportion': 1.0,  # Match reference
     'transfer_learning': False,
-    
-    # Data paths
-    'data_root': '/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Canonical',
-    'save_dir': './checkpoints',
     
     # Wandb configuration
     'wandb_session_name': 'tcn_joint_moment_prediction',
