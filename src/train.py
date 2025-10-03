@@ -5,10 +5,14 @@ Adapted for the Canonical dataset format.
 """
 
 import os
+import warnings
 os.environ["MKL_VERBOSE"] = "0"
 os.environ["MKL_DISABLE_FAST_MM"] = "1"
 import json
 import torch
+# Suppress NNPACK warnings
+warnings.filterwarnings('ignore', message='.*Could not initialize NNPACK.*')
+warnings.filterwarnings('ignore', category=UserWarning, module='torch')
 import wandb
 import argparse
 import numpy as np
@@ -44,8 +48,8 @@ def main():
                        help='Number of training epochs')
     parser.add_argument('--batch_size', type=int, default=32,
                        help='Batch size')
-    parser.add_argument('--learning_rate', type=float, default=0.001,
-                       help='Learning rate')
+    parser.add_argument('--learning_rate', type=float, default=5e-6,
+                       help='Learning rate (default: 5e-6 to match reference)')
     parser.add_argument('--window_size', type=int, default=100,
                        help='Window size for temporal sequences')
     parser.add_argument('--wandb_project', type=str, default='transfer-learning',
@@ -162,7 +166,8 @@ def main():
     optimizer = Adam(model.parameters(), lr=config['learning_rate'], weight_decay=1e-5)
     
     # Initialize scheduler (match reference with patience=1)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1)
+    # Increased patience to 3 for more stable training
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
     
     # Initialize trainer
     trainer = Trainer(

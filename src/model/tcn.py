@@ -61,12 +61,22 @@ class TemporalBlock(nn.Module):
             if isinstance(m, nn.Conv1d):
                 # weight_norm re-parameterizes the layer, so we initialize the 'weight_v' parameter
                 if hasattr(m, 'weight_v'):
-                    nn.init.xavier_uniform_(m.weight_v)
+                    # Use normal distribution with smaller std for more stable initialization
+                    nn.init.normal_(m.weight_v, mean=0.0, std=0.01)
+                    # Ensure weight_g is initialized properly
+                    if hasattr(m, 'weight_g'):
+                        nn.init.constant_(m.weight_g, 1.0)
                 else:
-                    nn.init.xavier_uniform_(m.weight)
+                    nn.init.normal_(m.weight, mean=0.0, std=0.01)
+                
+                # Initialize bias to zero
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.0)
 
         if self.downsample is not None:
-            nn.init.xavier_uniform_(self.downsample.weight)
+            nn.init.normal_(self.downsample.weight, mean=0.0, std=0.01)
+            if self.downsample.bias is not None:
+                nn.init.constant_(self.downsample.bias, 0.0)
 
     def forward(self, x):
         out = self.network(x)
@@ -117,6 +127,10 @@ class TCNModel(nn.Module):
         self.tcn = TemporalConvNet(self.input_size, self.num_channels, self.number_of_layers, 
                                    self.kernel_size, self.dropout, self.dilations)
         self.linear = nn.Linear(self.num_channels[-1] * self.window_size, self.output_size)
+        
+        # Initialize the final linear layer with small weights for stability
+        nn.init.normal_(self.linear.weight, mean=0.0, std=0.01)
+        nn.init.constant_(self.linear.bias, 0.0)
         
         print(f"\nTCN parameter #: {sum(p.numel() for p in self.tcn.parameters())}")
         print(f"FCNN parameter #: {sum(p.numel() for p in self.linear.parameters())}")
