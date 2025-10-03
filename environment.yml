@@ -6,7 +6,7 @@ dependencies:
   - python=3.12
   # Core scientific stack with OpenBLAS (no MKL)
   - nomkl
-  - numpy
+  - numpy<2  # PyTorch requires NumPy 1.x for compatibility
   - scipy
   - matplotlib
   - pandas
