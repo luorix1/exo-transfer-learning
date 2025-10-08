@@ -170,10 +170,15 @@ def predict_on_trial(
         col for col in label_df.columns if "hip_flexion_r_moment" in col.lower()
     ]
 
+    true_labels = []
     if hip_flexion_r_col:
         true_data = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
         # Get labels corresponding to the last time point of each window
-        true_labels = np.array([true_data[i + window_size - 1] for i in range(num_windows)])
+        # Make sure we don't go out of bounds
+        for i in range(num_windows):
+            label_idx = min(i + window_size - 1, len(true_data) - 1)
+            true_labels.append(true_data[label_idx])
+        true_labels = np.array(true_labels)
     else:
         # Fallback: try generic hip moment columns
         hip_moment_cols = [
@@ -191,11 +196,17 @@ def predict_on_trial(
 
             if hip_r_col:
                 true_data = label_df[hip_r_col[0]].values.reshape(-1, 1)
-                true_labels = np.array([true_data[i + window_size - 1] for i in range(num_windows)])
+                for i in range(num_windows):
+                    label_idx = min(i + window_size - 1, len(true_data) - 1)
+                    true_labels.append(true_data[label_idx])
+                true_labels = np.array(true_labels)
             elif len(hip_moment_cols) == 1:
                 # Fallback: use single moment column
                 true_data = label_df[hip_moment_cols[0]].values.reshape(-1, 1)
-                true_labels = np.array([true_data[i + window_size - 1] for i in range(num_windows)])
+                for i in range(num_windows):
+                    label_idx = min(i + window_size - 1, len(true_data) - 1)
+                    true_labels.append(true_data[label_idx])
+                true_labels = np.array(true_labels)
 
     if len(predictions) == 0 or len(true_labels) == 0:
         return None, None, None
@@ -340,11 +351,45 @@ def evaluate_model(
     ss_tot = np.sum((all_true_labels_clean - np.mean(all_true_labels_clean)) ** 2)
     r2_score = 1 - (ss_res / ss_tot)
 
+    # Calculate mean absolute values for scale verification
+    gt_mean_abs = np.mean(np.abs(all_true_labels_clean))
+    pred_mean_abs = np.mean(np.abs(all_predictions_clean))
+    scale_ratio = pred_mean_abs / gt_mean_abs if gt_mean_abs > 0 else 0
+
     print(f"\nEvaluation Results:")
     print(f"RMSE: {rmse:.4f} N-m/kg")
     print(f"MAE: {mae:.4f} N-m/kg")
     print(f"R² Score: {r2_score:.4f}")
     print(f"Valid samples: {len(all_predictions_clean)}")
+    print(f"\nScale Analysis:")
+    print(f"Ground Truth Mean |Value|: {gt_mean_abs:.4f} N-m/kg")
+    print(f"Predicted Mean |Value|: {pred_mean_abs:.4f} N-m/kg")
+    print(f"Scale Ratio (Pred/GT): {scale_ratio:.4f}")
+    if abs(scale_ratio - 1.0) > 0.5:
+        print(f"⚠️  WARNING: Large scale mismatch detected! Ratio should be ~1.0")
+    else:
+        print(f"✓ Scale appears reasonable")
+
+    # Offset and range diagnostics
+    gt_mean = float(np.mean(all_true_labels_clean))
+    pred_mean = float(np.mean(all_predictions_clean))
+    offset = pred_mean - gt_mean
+    gt_min, gt_max = float(np.min(all_true_labels_clean)), float(np.max(all_true_labels_clean))
+    pred_min, pred_max = float(np.min(all_predictions_clean)), float(np.max(all_predictions_clean))
+    gt_span = gt_max - gt_min
+    pred_span = pred_max - pred_min
+
+    # Simple linear fit: Pred ≈ a * GT + b
+    try:
+        a, b = np.polyfit(all_true_labels_clean.flatten(), all_predictions_clean.flatten(), 1)
+    except Exception:
+        a, b = np.nan, np.nan
+
+    print("\nOffset/Range Diagnostics:")
+    print(f"Mean (GT): {gt_mean:.4f}  |  Mean (Pred): {pred_mean:.4f}  |  Offset (Pred-GT): {offset:+.4f} N-m/kg")
+    print(f"Range (GT): [{gt_min:.4f}, {gt_max:.4f}]  span={gt_span:.4f}")
+    print(f"Range (Pred): [{pred_min:.4f}, {pred_max:.4f}]  span={pred_span:.4f}")
+    print(f"Linear fit: Pred ≈ {a:.3f} * GT + {b:.3f}")
 
     # Plot 1: Scatter plot - predictions vs ground truth (unilateral: single hip moment)
     fig, ax = plt.subplots(1, 1, figsize=(10, 8))

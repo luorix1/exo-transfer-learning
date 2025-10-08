@@ -80,9 +80,47 @@ python processing/canonical_frame_converter.py \
 - `--unilateral`: Assume all IMU columns are right side
 - `--unit`: Unit of real IMU gyro (rad/deg, default: rad)
 
-### 2. Batch Dataset Reformatting
+### 2. MeMo Dataset Processing
 
-Convert datasets to the standardized Canonical format:
+Process MeMo_processed dataset with coordinate frame transformation:
+
+```bash
+python processing/process_memo.py \
+  --input-root "/path/to/MeMo_processed" \
+  --output-root "/path/to/Canonical_MeMo" \
+  --conditions 0mps,1p0mps \
+  --subjects AB01_Jimin,AB02_Rajiv
+```
+
+**Coordinate Frame Transformation:**
+
+MeMo IMU sensors use a different coordinate frame than OpenSim canonical:
+- **MeMo Frame**: x=up, y=left, z=back
+- **Canonical Frame**: x=forward, y=up, z=right
+
+The script automatically transforms gyroscope data:
+```
+canonical_x (forward) = -memo_z (flip back to forward)
+canonical_y (up)      =  memo_x (up stays up)
+canonical_z (right)   = -memo_y (flip left to right)
+```
+
+**Options:**
+- `--input-root`: Path to MeMo_processed directory
+- `--output-root`: Output directory for Canonical format
+- `--conditions`: Comma-separated conditions (e.g., `0mps,1p0mps,transient_15sec`)
+- `--subjects`: Comma-separated subjects to process (default: all subjects)
+- `--no-transform`: Skip coordinate frame transformation (keep original MeMo frame)
+
+**What it does:**
+1. Renames label files from `{subject}_{condition}_{trial}.csv` to `joint_moment.csv`
+2. Standardizes all column names to lowercase with underscores
+3. Transforms gyroscope data from MeMo frame to OpenSim canonical frame
+4. Maintains the existing Subject/Condition/Trial/Input,Label structure
+
+### 3. Batch Dataset Reformatting
+
+Convert raw datasets (Camargo, Keaton, etc.) to the standardized Canonical format:
 
 ```bash
 python processing/batch_reformat.py \
@@ -191,6 +229,8 @@ The training script saves:
 
 ## Model Testing
 
+### Basic Testing
+
 ```bash
 python src/test.py \
   --model_path "./checkpoints/tcn_joint_moment_best.pt" \
@@ -200,21 +240,128 @@ python src/test.py \
   --conditions levelground
 ```
 
+### Cross-Dataset Testing
+
+The `test.py` script is fully equipped for cross-dataset evaluation. You can test a model trained on one dataset on a completely different dataset, as long as the data format matches.
+
+#### Example 1: Transfer Learning Evaluation
+
+```bash
+# Train on Dataset A (e.g., Camargo)
+python src/train.py \
+  --data_root "/path/to/Canonical_Camargo" \
+  --save_dir "./model_camargo" \
+  --train_subjects AB06 AB07 AB08 AB09 AB10 \
+  --test_subjects AB11 AB12 \
+  --conditions treadmill \
+  --imu_segments pelvis femur
+
+# Test on Dataset B (e.g., MoMo) - Transfer Learning
+python src/test.py \
+  --model_path "./model_camargo/tcn_joint_moment_20250103_123456.pt" \
+  --data_root "/path/to/Canonical_MoMo" \
+  --save_dir "./model_camargo" \
+  --test_subjects Subject01 Subject02 Subject03 \
+  --conditions levelground treadmill
+```
+
+#### Example 2: Cross-Condition Generalization
+
+```bash
+# Train on treadmill condition
+python src/train.py \
+  --data_root "/path/to/Canonical" \
+  --save_dir "./model_treadmill" \
+  --train_subjects BT01 BT02 BT03 \
+  --test_subjects BT04 BT05 \
+  --conditions treadmill \
+  --imu_segments femur
+
+# Test on stairs condition (generalization test)
+python src/test.py \
+  --model_path "./model_treadmill/tcn_joint_moment_20250103_123456.pt" \
+  --data_root "/path/to/Canonical" \
+  --save_dir "./model_treadmill" \
+  --test_subjects BT06 BT07 BT08 \
+  --conditions stairs levelground
+```
+
+#### Example 3: Different IMU Configuration
+
+```bash
+# Train with dual IMU (pelvis + femur)
+python src/train.py \
+  --data_root "/path/to/Canonical" \
+  --save_dir "./model_dual_imu" \
+  --imu_segments pelvis femur \
+  --train_subjects Subject1 Subject2
+
+# Test with same dual IMU on different subjects
+python src/test.py \
+  --model_path "./model_dual_imu/tcn_joint_moment_20250103_123456.pt" \
+  --data_root "/path/to/Canonical" \
+  --save_dir "./model_dual_imu" \
+  --test_subjects Subject3 Subject4 \
+  --imu_segments pelvis femur
+```
+
+#### Example 4: Single IMU Testing
+
+```bash
+# Train with single thigh IMU
+python src/train.py \
+  --data_root "/path/to/Canonical" \
+  --save_dir "./model_single_imu" \
+  --imu_segments femur \
+  --train_subjects Subject1 Subject2
+
+# Test with same single IMU configuration
+python src/test.py \
+  --model_path "./model_single_imu/tcn_joint_moment_20250103_123456.pt" \
+  --data_root "/path/to/Canonical" \
+  --save_dir "./model_single_imu" \
+  --test_subjects Subject3 Subject4 \
+  --imu_segments femur
+```
+
+### Cross-Dataset Requirements
+
+For successful cross-dataset testing, ensure:
+
+1. **Same data format**: Test data must be in Canonical format:
+   ```
+   Subject/Condition/Trial/
+   ├── Input/imu_data.csv
+   └── Label/joint_moment.csv
+   ```
+
+2. **Same IMU segments**: Test data must have the same sensors used during training:
+   - If trained with `femur + pelvis`, test data needs both
+   - If trained with just `femur`, test data needs just femur
+
+3. **Same label columns**: Test data needs `hip_flexion_r_moment` or `hip_r_moment`
+
+4. **Normalization files**: The `save_dir` must contain:
+   - `input_mean.npy`, `input_std.npy`
+   - `label_mean.npy`, `label_std.npy`
+   - `config.json`
+   - Model checkpoint (`.pt` file)
+
 ### Test Output
 
 The test script generates:
-- `evaluation_scatter.png`: Scatter plot of predictions vs ground truth
+- `evaluation_scatter.png`: Scatter plot of predictions vs ground truth with R² score
 - `timeseries_{subject}_{condition}_{trial}.png`: Time series plots for sample trials (up to 3)
 - `evaluation_results.csv`: Detailed prediction results
-- Console output: RMSE, MAE, and sample count
+- Console output: RMSE, MAE, R² score, and sample count
 
 ### Test Arguments
 
 - `--model_path`: Path to trained model checkpoint (required)
-- `--data_root`: Path to Canonical dataset
-- `--save_dir`: Directory containing normalization parameters
-- `--test_subjects`: List of test subject IDs
-- `--conditions`: Conditions to test on
+- `--data_root`: Path to Canonical dataset (can be different from training)
+- `--save_dir`: Directory containing normalization parameters (from training)
+- `--test_subjects`: List of test subject IDs (can be different from training)
+- `--conditions`: Conditions to test on (can be different from training)
 - `--imu_segments`: IMU segments (optional, reads from config.json if available)
 - `--window_size`: Window size (optional, reads from config.json if available)
 
@@ -273,7 +420,8 @@ transfer-learning/
 ├── processing/
 │   ├── opensim/              # Local OpenSim utilities package
 │   ├── canonical_frame_converter.py  # IMU canonical frame conversion
-│   └── batch_reformat.py     # Dataset reformatting utility
+│   ├── batch_reformat.py     # Dataset reformatting utility (Camargo, Keaton, etc.)
+│   └── process_memo.py       # MeMo dataset processor with frame transformation
 ├── src/
 │   ├── config/
 │   │   └── hyperparameters.py  # Model hyperparameters
