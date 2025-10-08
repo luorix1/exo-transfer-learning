@@ -215,6 +215,10 @@ python src/train.py \
 - `--learning_rate`: Learning rate (default: 0.001)
 - `--window_size`: Temporal window size (default: 100)
 - `--no_wandb`: Disable wandb logging
+- `--augment`: Enable training-time augmentation (random small IMU rotations ±10°, Gaussian noise)
+- `--label_filter_hz`: Low-pass cutoff (Hz) for zero-phase label filtering (default: 6.0)
+- `--use_curriculum`: Toggle curriculum training (plumbing available)
+- `--curriculum_epochs`: Number of initial curriculum epochs (0 disables)
 
 ### Output Files
 
@@ -354,6 +358,7 @@ The test script generates:
 - `timeseries_{subject}_{condition}_{trial}.png`: Time series plots for sample trials (up to 3)
 - `evaluation_results.csv`: Detailed prediction results
 - Console output: RMSE, MAE, R² score, and sample count
+ - Scale/offset diagnostics: mean(|GT|), mean(|Pred|), scale ratio, mean offset, min/max spans, linear fit a,b
 
 ### Test Arguments
 
@@ -402,6 +407,23 @@ The data loader:
 - Stacks left and right data randomly for unilateral training
 - Normalizes inputs and outputs using z-score normalization
 - Creates sliding windows for temporal modeling
+- Applies zero-phase Butterworth low-pass filter to labels at 6 Hz (Fs=100 Hz); cutoff configurable via `--label_filter_hz`
+- Optional train-time augmentation (if `--augment`): per-sensor small rotations (±10°) on gyro triplets and Gaussian noise (std=0.01)
+
+### Domain Check Utility
+
+Compare label scale/range across two datasets (uses the same loader logic):
+
+```bash
+python scripts/domain_check.py \
+  --dataset_a /path/to/Canonical_Camargo \
+  --dataset_b /path/to/Canonical_MeMo \
+  --name_a camargo --name_b memo \
+  --imu_segments pelvis femur \
+  --verbose --out 20251003_1/domain_check
+```
+
+Outputs per-trial CSV summaries and overall stats (min/max/span/mean/std/mean|.|) and a scale ratio.
 
 ## Environment Details
 
