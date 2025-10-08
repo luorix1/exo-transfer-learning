@@ -62,6 +62,14 @@ def main():
                        help='Wandb tags for the experiment')
     parser.add_argument('--no_wandb', action='store_true',
                        help='Disable wandb logging')
+    parser.add_argument('--augment', action='store_true',
+                       help='Enable training-time data augmentation')
+    parser.add_argument('--use_curriculum', action='store_true',
+                       help='Enable curriculum training (pretrain on smoothed labels then fine-tune)')
+    parser.add_argument('--curriculum_epochs', type=int, default=0,
+                       help='Number of initial epochs using heavier label smoothing (0 disables)')
+    parser.add_argument('--label_filter_hz', type=float, default=6.0,
+                       help='Low-pass cutoff frequency (Hz) for label smoothing')
     
     args = parser.parse_args()
     
@@ -86,6 +94,10 @@ def main():
         'wandb_entity': args.wandb_entity,
         'imu_segments': args.imu_segments,
         'input_size': input_size,
+        'augment': args.augment,
+        'use_curriculum': args.use_curriculum,
+        'curriculum_epochs': args.curriculum_epochs,
+        'label_filter_hz': args.label_filter_hz,
     })
 
     # Unilateral controller: always output_size=1, train using both sides stacked (reference style)

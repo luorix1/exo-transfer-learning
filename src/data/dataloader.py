@@ -20,6 +20,8 @@ class DataHandler:
         self.transfer_learning = hyperparam_config["transfer_learning"]
         self.pretrained_model_path = pretrained_model_path
         self.imu_segments = hyperparam_config.get("imu_segments", ["pelvis", "femur"])
+        self.augment = hyperparam_config.get("augment", False)
+        self.label_filter_hz = float(hyperparam_config.get("label_filter_hz", 6.0))
             
         # Placeholder for data
         self.train_data = None
@@ -56,7 +58,9 @@ class DataHandler:
             input_std=self.input_std,
             label_mean=self.label_mean,
             label_std=self.label_std,
-            imu_segments=self.imu_segments
+            imu_segments=self.imu_segments,
+            augment=self.augment,
+            label_filter_hz=self.label_filter_hz
         )
         
         # Retrieve mean and std from training data
@@ -74,7 +78,9 @@ class DataHandler:
             window_size=self.window_size,
             data_type="test_data",
             dataset_proportion=self.dataset_proportion,
-            imu_segments=self.imu_segments
+            imu_segments=self.imu_segments,
+            augment=False,
+            label_filter_hz=self.label_filter_hz
         )
         # Replace the mean and std of test data with that of training data
         self.test_data.input_mean = self.input_mean
@@ -157,7 +163,9 @@ class LoadData(Dataset):
                  window_size: int, data_type: str, dataset_proportion: Optional[float] = None,
                  input_mean: Optional[np.ndarray] = None, input_std: Optional[np.ndarray] = None,
                  label_mean: Optional[np.ndarray] = None, label_std: Optional[np.ndarray] = None,
-                 normalize: bool = True, imu_segments: Optional[List[str]] = None):
+                 normalize: bool = True, imu_segments: Optional[List[str]] = None,
+                 augment: bool = False,
+                 label_filter_hz: float = 6.0):
         self.window_size = window_size
         self.input_list = []
         self.label_list = []
@@ -167,6 +175,8 @@ class LoadData(Dataset):
         self.subject_data_length = []
         # Default to femur+pelvis if not specified
         self.imu_segments = imu_segments if imu_segments is not None else ["pelvis", "femur"]
+        self.augment = augment and (data_type.startswith("train"))
+        self.label_filter_hz = float(label_filter_hz)
 
         for subject_num, subject in enumerate(partitions):  # Multiple partitions
             self.subject_data_length.append(0)  # Append 0 for each subject
@@ -355,6 +365,29 @@ class LoadData(Dataset):
                         if label_buffer_R is None and label_buffer_L is None:
                             continue
                     
+                    # Apply zero-phase Butterworth low-pass filtering to label(s) at 6 Hz (Fs=100 Hz)
+                    def butter_lowpass_zero_phase(data: np.ndarray, cutoff_hz: float = None, fs_hz: float = 100.0, order: int = 4) -> np.ndarray:
+                        if data is None:
+                            return None
+                        if data.size == 0:
+                            return data
+                        # Design Butterworth
+                        nyq = 0.5 * fs_hz
+                        cutoff = self.label_filter_hz if cutoff_hz is None else cutoff_hz
+                        wn = float(cutoff) / nyq
+                        b, a = signal.butter(order, wn, btype='low', analog=False)
+                        # filtfilt along time axis (axis=0). Expect shape (N, 1)
+                        try:
+                            return signal.filtfilt(b, a, data.squeeze(), axis=0, method='pad', padlen=min(3 * max(len(a), len(b)), max(0, len(data) - 1))).reshape(-1, 1)
+                        except ValueError:
+                            # If sequence too short for padlen, fall back to lfilter twice
+                            y = signal.lfilter(b, a, data.squeeze(), axis=0)
+                            y = signal.lfilter(b, a, y[::-1], axis=0)[::-1]
+                            return y.reshape(-1, 1)
+
+                    label_buffer_R = butter_lowpass_zero_phase(label_buffer_R)
+                    label_buffer_L = butter_lowpass_zero_phase(label_buffer_L)
+
                     # Process right side if we have both input and label
                     if input_buffer_R is not None and label_buffer_R is not None:
                         # Ensure input and label lengths match
@@ -385,6 +418,41 @@ class LoadData(Dataset):
                         input_buffer_L_clean = None
                         label_buffer_L_clean = None
                     
+                    # Optional: training-time augmentation (rotations, noise, time stretch)
+                    def apply_augmentation(arr: np.ndarray) -> np.ndarray:
+                        if not self.augment:
+                            return arr
+                        if arr is None or len(arr) == 0:
+                            return arr
+                        data = arr.copy()
+                        # Small random rotation per sample around axes for gyro triplets (per sensor)
+                        def rotate_triples(mat: np.ndarray) -> np.ndarray:
+                            m = mat.copy()
+                            # Determine number of sensors (3 channels per sensor)
+                            num_channels = m.shape[1]
+                            if num_channels % 3 != 0:
+                                return m
+                            num_sensors = num_channels // 3
+                            for s in range(num_sensors):
+                                sl = slice(3*s, 3*s+3)
+                                gx = np.deg2rad(np.random.uniform(-10, 10))
+                                gy = np.deg2rad(np.random.uniform(-10, 10))
+                                gz = np.deg2rad(np.random.uniform(-10, 10))
+                                Rx = np.array([[1,0,0],[0,np.cos(gx),-np.sin(gx)],[0,np.sin(gx),np.cos(gx)]])
+                                Ry = np.array([[np.cos(gy),0,np.sin(gy)],[0,1,0],[-np.sin(gy),0,np.cos(gy)]])
+                                Rz = np.array([[np.cos(gz),-np.sin(gz),0],[np.sin(gz),np.cos(gz),0],[0,0,1]])
+                                R = Rz @ Ry @ Rx
+                                m[:, sl] = m[:, sl] @ R.T
+                            return m
+                        data = rotate_triples(data)
+                        # Add Gaussian noise
+                        data = data + np.random.normal(scale=0.01, size=data.shape)
+                        return data
+
+                    input_buffer_R_clean = apply_augmentation(input_buffer_R_clean)
+                    if input_buffer_L_clean is not None:
+                        input_buffer_L_clean = apply_augmentation(input_buffer_L_clean)
+
                     # Stack available data (unilateral training)
                     if input_buffer_R_clean is not None and len(input_buffer_R_clean) > 0:
                         if input_buffer_L_clean is not None and len(input_buffer_L_clean) > 0:
