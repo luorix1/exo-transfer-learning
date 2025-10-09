@@ -21,8 +21,11 @@ import torch
 import argparse
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from pathlib import Path
+from scipy import signal
 
 from model.tcn import TCNModel
 from data.dataloader import DataHandler
@@ -48,6 +51,24 @@ def load_normalization_params(save_dir: str):
     return input_mean, input_std, label_mean, label_std
 
 
+def butter_lowpass_zero_phase(data: np.ndarray, cutoff_hz: float = 6.0, fs_hz: float = 100.0, order: int = 4) -> np.ndarray:
+    """Apply zero-phase Butterworth low-pass filter to match dataloader preprocessing."""
+    if data is None or data.size == 0:
+        return data
+    # Design Butterworth
+    nyq = 0.5 * fs_hz
+    wn = cutoff_hz / nyq
+    b, a = signal.butter(order, wn, btype='low', analog=False)
+    # filtfilt along time axis (axis=0). Expect shape (N, 1)
+    try:
+        return signal.filtfilt(b, a, data.squeeze(), axis=0, method='pad', padlen=min(3 * max(len(a), len(b)), max(0, len(data) - 1))).reshape(-1, 1)
+    except ValueError:
+        # If sequence too short for padlen, fall back to lfilter twice
+        y = signal.lfilter(b, a, data.squeeze(), axis=0)
+        y = signal.lfilter(b, a, y[::-1], axis=0)[::-1]
+        return y.reshape(-1, 1)
+
+
 def predict_on_trial(
     model,
     trial_path: str,
@@ -58,6 +79,7 @@ def predict_on_trial(
     window_size: int,
     device: torch.device,
     imu_segments: list,
+    label_filter_hz: float = 6.0,
 ):
     """Make predictions on a single trial."""
     # Load IMU data
@@ -173,6 +195,8 @@ def predict_on_trial(
     true_labels = []
     if hip_flexion_r_col:
         true_data = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
+        # Apply the same low-pass filter as used in training
+        true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
         # Get labels corresponding to the last time point of each window
         # Make sure we don't go out of bounds
         for i in range(num_windows):
@@ -196,6 +220,8 @@ def predict_on_trial(
 
             if hip_r_col:
                 true_data = label_df[hip_r_col[0]].values.reshape(-1, 1)
+                # Apply the same low-pass filter as used in training
+                true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
                 for i in range(num_windows):
                     label_idx = min(i + window_size - 1, len(true_data) - 1)
                     true_labels.append(true_data[label_idx])
@@ -203,6 +229,8 @@ def predict_on_trial(
             elif len(hip_moment_cols) == 1:
                 # Fallback: use single moment column
                 true_data = label_df[hip_moment_cols[0]].values.reshape(-1, 1)
+                # Apply the same low-pass filter as used in training
+                true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
                 for i in range(num_windows):
                     label_idx = min(i + window_size - 1, len(true_data) - 1)
                     true_labels.append(true_data[label_idx])
@@ -211,8 +239,9 @@ def predict_on_trial(
     if len(predictions) == 0 or len(true_labels) == 0:
         return None, None, None
 
-    # Denormalize predictions
+    # Denormalize predictions using training dataset stats
     predictions_denorm = predictions * label_std + label_mean
+    # Ground truth labels are already in correct units after filtering
     true_labels_denorm = true_labels
 
     return predictions_denorm, true_labels_denorm, input_data
@@ -227,6 +256,7 @@ def evaluate_model(
     window_size: int,
     device: torch.device,
     imu_segments: list,
+    label_filter_hz: float = 6.0,
 ):
     """Evaluate model on test subjects."""
 
@@ -279,10 +309,15 @@ def evaluate_model(
     config_imu_segments = config.get(
         "imu_segments", imu_segments if imu_segments else ["pelvis", "femur"]
     )
+    
+    # Get label_filter_hz from config
+    config_label_filter_hz = config.get("label_filter_hz", 6.0)
 
     all_predictions = []
     all_true_labels = []
     trial_names = []
+    trial_predictions = []  # Store individual trial predictions for plotting
+    trial_true_labels = []  # Store individual trial true labels for plotting
 
     # Evaluate on each subject and condition
     for subject in subjects:
@@ -314,12 +349,16 @@ def evaluate_model(
                     config["window_size"],
                     device,
                     config_imu_segments,
+                    label_filter_hz,
                 )
 
                 if pred is not None:
                     all_predictions.append(pred)
                     all_true_labels.append(true)
                     trial_names.append(f"{subject}/{condition}/{trial}")
+                    # Store individual trial data for plotting
+                    trial_predictions.append(pred)
+                    trial_true_labels.append(true)
                 
                 # Explicit garbage collection after each trial to prevent memory accumulation
                 gc.collect()
@@ -432,122 +471,99 @@ def evaluate_model(
     plt.close()
 
     # Plot 2: Time series plots for sample trials
-    # Re-collect predictions per trial for time series plotting
+    # Use already computed predictions for time series plotting
     num_sample_trials = min(3, len(trial_names))
     if num_sample_trials > 0:
         print(f"\nGenerating time series plots for {num_sample_trials} sample trials...")
         
-        # Re-process the first few trials to get individual predictions
-        sample_count = 0
-        for subject in subjects:
-            if sample_count >= num_sample_trials:
+        # Use the already computed predictions
+        for i in range(num_sample_trials):
+            if i >= len(trial_predictions):
                 break
-            subject_path = os.path.join(data_root, subject)
-            if not os.path.exists(subject_path):
-                continue
+                
+            pred_trial = trial_predictions[i]
+            true_trial = trial_true_labels[i]
+            trial_name = trial_names[i]
+            
+            print(f"  Processing trial {i + 1}/{num_sample_trials}: {trial_name}")
 
-            for condition in conditions:
-                if sample_count >= num_sample_trials:
-                    break
-                condition_path = os.path.join(subject_path, condition)
-                if not os.path.exists(condition_path):
-                    continue
+            # Create time series plot
+            fig, ax = plt.subplots(1, 1, figsize=(14, 6))
 
-                for trial in os.listdir(condition_path):
-                    if sample_count >= num_sample_trials:
-                        break
-                    trial_path = os.path.join(condition_path, trial)
-                    if not os.path.isdir(trial_path):
-                        continue
+            # Time axis (in samples or frames)
+            time_axis = np.arange(len(pred_trial))
 
-                    # Get predictions for this trial
-                    pred_trial, true_trial, _ = predict_on_trial(
-                        model,
-                        trial_path,
-                        input_mean,
-                        input_std,
-                        label_mean,
-                        label_std,
-                        config["window_size"],
-                        device,
-                        config_imu_segments,
-                    )
-                    
-                    if pred_trial is None:
-                        continue
+            ax.plot(
+                time_axis,
+                true_trial.flatten(),
+                "b-",
+                label="Ground Truth",
+                linewidth=2,
+                alpha=0.8,
+            )
+            ax.plot(
+                time_axis,
+                pred_trial.flatten(),
+                "r--",
+                label="Prediction",
+                linewidth=2,
+                alpha=0.8,
+            )
+            
+            # Calculate trial-specific metrics
+            trial_valid_mask = ~(np.isnan(pred_trial) | np.isnan(true_trial))
+            if np.any(trial_valid_mask):
+                trial_pred_clean = pred_trial[trial_valid_mask]
+                trial_true_clean = true_trial[trial_valid_mask]
+                trial_rmse = np.sqrt(np.mean((trial_pred_clean - trial_true_clean) ** 2))
+                trial_mae = np.mean(np.abs(trial_pred_clean - trial_true_clean))
+                
+                # Add metrics to plot
+                ax.text(0.02, 0.98, f'Trial RMSE: {trial_rmse:.4f} N-m/kg\nTrial MAE: {trial_mae:.4f} N-m/kg', 
+                        transform=ax.transAxes, fontsize=10,
+                        verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
 
-                    # Create time series plot
-                    fig, ax = plt.subplots(1, 1, figsize=(14, 6))
+            ax.set_xlabel("Sample Index", fontsize=12)
+            ax.set_ylabel("Hip Flexion Moment (N-m/kg)", fontsize=12)
+            ax.set_title(f"Time Series: {trial_name}", fontsize=14, fontweight='bold')
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
 
-                    # Time axis (in samples or frames)
-                    time_axis = np.arange(len(pred_trial))
+            plt.tight_layout()
+            # Save with trial-specific name (sanitize path)
+            safe_trial_name = trial_name.replace("/", "_").replace("\\", "_")
+            plt.savefig(
+                os.path.join(save_dir, f"timeseries_{safe_trial_name}.png"),
+                dpi=300,
+                bbox_inches="tight",
+            )
+            plt.close()
 
-                    ax.plot(
-                        time_axis,
-                        true_trial.flatten(),
-                        "b-",
-                        label="Ground Truth",
-                        linewidth=2,
-                        alpha=0.8,
-                    )
-                    ax.plot(
-                        time_axis,
-                        pred_trial.flatten(),
-                        "r--",
-                        label="Prediction",
-                        linewidth=2,
-                        alpha=0.8,
-                    )
-                    
-                    # Calculate trial-specific metrics
-                    trial_valid_mask = ~(np.isnan(pred_trial) | np.isnan(true_trial))
-                    if np.any(trial_valid_mask):
-                        trial_pred_clean = pred_trial[trial_valid_mask]
-                        trial_true_clean = true_trial[trial_valid_mask]
-                        trial_rmse = np.sqrt(np.mean((trial_pred_clean - trial_true_clean) ** 2))
-                        trial_mae = np.mean(np.abs(trial_pred_clean - trial_true_clean))
-                        
-                        # Add metrics to plot
-                        ax.text(0.02, 0.98, f'Trial RMSE: {trial_rmse:.4f} N-m/kg\nTrial MAE: {trial_mae:.4f} N-m/kg', 
-                                transform=ax.transAxes, fontsize=10,
-                                verticalalignment='top',
-                                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
-
-                    trial_name = f"{subject}/{condition}/{trial}"
-                    ax.set_xlabel("Sample Index", fontsize=12)
-                    ax.set_ylabel("Hip Flexion Moment (N-m/kg)", fontsize=12)
-                    ax.set_title(f"Time Series: {trial_name}", fontsize=14, fontweight='bold')
-                    ax.legend(fontsize=11)
-                    ax.grid(True, alpha=0.3)
-
-                    plt.tight_layout()
-                    # Save with trial-specific name (sanitize path)
-                    safe_trial_name = trial_name.replace("/", "_").replace("\\", "_")
-                    plt.savefig(
-                        os.path.join(save_dir, f"timeseries_{safe_trial_name}.png"),
-                        dpi=300,
-                        bbox_inches="tight",
-                    )
-                    plt.close()
-
-                    print(f"  Saved time series plot: timeseries_{safe_trial_name}.png")
-                    sample_count += 1
+            print(f"  Saved time series plot: timeseries_{safe_trial_name}.png")
 
     # Save detailed results
+    print("Creating results DataFrame...")
     results_df = pd.DataFrame(
         {
             "true_hip_moment": true_flat,
             "pred_hip_moment": pred_flat,
         }
     )
-
+    print("Saving results to CSV...")
     results_df.to_csv(os.path.join(save_dir, "evaluation_results.csv"), index=False)
+    print("CSV saved successfully.")
     print(f"\nResults saved to {save_dir}")
     print(f"  - evaluation_scatter.png: Scatter plot of all predictions")
     print(
         f"  - timeseries_*.png: Time series plots for {num_sample_trials} sample trial(s)"
     )
     print(f"  - evaluation_results.csv: Detailed prediction results")
+    
+    # Explicit cleanup
+    plt.close('all')  # Close all matplotlib figures
+    gc.collect()  # Force garbage collection
+    print("Evaluation completed successfully!")
 
 
 def main():
@@ -590,6 +606,7 @@ def main():
         default=None,
         help="Window size for temporal sequences (optional, will use config.json if available)",
     )
+    # --denormalize_gt removed: ground truth should not be denormalized
 
     args = parser.parse_args()
 
@@ -608,6 +625,15 @@ def main():
             print(f"Normalization file not found: {os.path.join(args.save_dir, file)}")
             return
 
+    # Load config to get label_filter_hz
+    config_path = os.path.join(args.save_dir, "config.json")
+    label_filter_hz = 6.0  # Default
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            config = json.load(f)
+            label_filter_hz = config.get("label_filter_hz", 6.0)
+            print(f"Using label filter: {label_filter_hz} Hz")
+
     # Evaluate model
     evaluate_model(
         model_path=args.model_path,
@@ -618,8 +644,16 @@ def main():
         window_size=args.window_size,
         device=device,
         imu_segments=args.imu_segments,
+        label_filter_hz=label_filter_hz,
     )
+    
+    # Final cleanup
+    plt.close('all')
+    gc.collect()
+    print("Script completed successfully!")
 
+    # Terminate the program
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
