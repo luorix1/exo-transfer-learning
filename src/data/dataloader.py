@@ -297,11 +297,6 @@ class LoadData(Dataset):
                         input_df_R = df[right_cols].values
                         if left_cols:
                             input_df_L = df[left_cols].values
-                            # Flip signs for left side gyro (Y-axis for canonical frame)
-                            if input_df_L.shape[1] >= 6:
-                                input_df_L[:, [1, 4]] *= -1  # Y-axes of both sensors
-                            elif input_df_L.shape[1] >= 3:
-                                input_df_L[:, 1] *= -1  # Y-axis only
                         else:
                             # If no left columns, set to None - we'll only use right side data
                             input_df_L = None
