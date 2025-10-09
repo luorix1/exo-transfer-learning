@@ -22,6 +22,7 @@ class DataHandler:
         self.imu_segments = hyperparam_config.get("imu_segments", ["pelvis", "femur"])
         self.augment = hyperparam_config.get("augment", False)
         self.label_filter_hz = float(hyperparam_config.get("label_filter_hz", 6.0))
+        self.normalize = hyperparam_config.get("normalize", True)
             
         # Placeholder for data
         self.train_data = None
@@ -58,6 +59,7 @@ class DataHandler:
             input_std=self.input_std,
             label_mean=self.label_mean,
             label_std=self.label_std,
+            normalize=self.normalize,
             imu_segments=self.imu_segments,
             augment=self.augment,
             label_filter_hz=self.label_filter_hz
@@ -78,6 +80,7 @@ class DataHandler:
             window_size=self.window_size,
             data_type="test_data",
             dataset_proportion=self.dataset_proportion,
+            normalize=self.normalize,
             imu_segments=self.imu_segments,
             augment=False,
             label_filter_hz=self.label_filter_hz

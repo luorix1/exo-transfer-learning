@@ -70,6 +70,14 @@ def main():
                        help='Number of initial epochs using heavier label smoothing (0 disables)')
     parser.add_argument('--label_filter_hz', type=float, default=6.0,
                        help='Low-pass cutoff frequency (Hz) for label smoothing')
+    parser.add_argument('--no_normalize', action='store_true',
+                       help='Disable input normalization (use raw IMU data)')
+    parser.add_argument('--norm', type=str, default='weight_norm',
+                       choices=['weight_norm', 'BatchNorm1d', 'LayerNorm', None],
+                       help='Normalization type for TCN layers (default: weight_norm)')
+    parser.add_argument('--activation', type=str, default='ReLU',
+                       choices=['ReLU', 'GELU', 'ELU', 'LeakyReLU', 'Tanh'],
+                       help='Activation function for TCN layers (default: ReLU)')
     
     args = parser.parse_args()
     
@@ -98,6 +106,9 @@ def main():
         'use_curriculum': args.use_curriculum,
         'curriculum_epochs': args.curriculum_epochs,
         'label_filter_hz': args.label_filter_hz,
+        'normalize': not args.no_normalize,  # Default True, set to False if --no_normalize
+        'norm': args.norm,  # Normalization type for TCN layers
+        'activation': args.activation,  # Activation function for TCN layers
     })
 
     # Unilateral controller: always output_size=1, train using both sides stacked (reference style)

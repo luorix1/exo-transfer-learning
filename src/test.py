@@ -80,6 +80,7 @@ def predict_on_trial(
     device: torch.device,
     imu_segments: list,
     label_filter_hz: float = 6.0,
+    normalize: bool = True,
 ):
     """Make predictions on a single trial."""
     # Load IMU data
@@ -153,8 +154,9 @@ def predict_on_trial(
         print(f"Invalid number of IMU segments: {len(imu_segments)}")
         return None, None, None
 
-    # Normalize input data
-    input_data = (input_data - input_mean) / input_std
+    # Normalize input data if requested
+    if normalize:
+        input_data = (input_data - input_mean) / input_std
 
     # Create sliding windows - process in batches for memory efficiency
     predictions = []
@@ -239,10 +241,15 @@ def predict_on_trial(
     if len(predictions) == 0 or len(true_labels) == 0:
         return None, None, None
 
-    # Denormalize predictions using training dataset stats
-    predictions_denorm = predictions * label_std + label_mean
-    # Ground truth labels are already in correct units after filtering
-    true_labels_denorm = true_labels
+    # Denormalize predictions using training dataset stats (only if normalization was used)
+    if normalize:
+        predictions_denorm = predictions * label_std + label_mean
+        # Ground truth labels are already in correct units after filtering
+        true_labels_denorm = true_labels
+    else:
+        predictions_denorm = predictions
+        # Ground truth labels are already in correct units after filtering
+        true_labels_denorm = true_labels
 
     return predictions_denorm, true_labels_denorm, input_data
 
@@ -257,6 +264,7 @@ def evaluate_model(
     device: torch.device,
     imu_segments: list,
     label_filter_hz: float = 6.0,
+    normalize: bool = True,
 ):
     """Evaluate model on test subjects."""
 
@@ -310,8 +318,9 @@ def evaluate_model(
         "imu_segments", imu_segments if imu_segments else ["pelvis", "femur"]
     )
     
-    # Get label_filter_hz from config
+    # Get label_filter_hz and normalize from config
     config_label_filter_hz = config.get("label_filter_hz", 6.0)
+    config_normalize = config.get("normalize", True)
 
     all_predictions = []
     all_true_labels = []
@@ -350,6 +359,7 @@ def evaluate_model(
                     device,
                     config_imu_segments,
                     label_filter_hz,
+                    normalize,
                 )
 
                 if pred is not None:
@@ -606,6 +616,11 @@ def main():
         default=None,
         help="Window size for temporal sequences (optional, will use config.json if available)",
     )
+    parser.add_argument(
+        "--no_normalize",
+        action="store_true",
+        help="Disable input normalization (use raw IMU data)",
+    )
     # --denormalize_gt removed: ground truth should not be denormalized
 
     args = parser.parse_args()
@@ -625,14 +640,22 @@ def main():
             print(f"Normalization file not found: {os.path.join(args.save_dir, file)}")
             return
 
-    # Load config to get label_filter_hz
+    # Load config to get label_filter_hz and normalize
     config_path = os.path.join(args.save_dir, "config.json")
     label_filter_hz = 6.0  # Default
+    normalize = True  # Default
     if os.path.exists(config_path):
         with open(config_path, "r") as f:
             config = json.load(f)
             label_filter_hz = config.get("label_filter_hz", 6.0)
+            normalize = config.get("normalize", True)
             print(f"Using label filter: {label_filter_hz} Hz")
+            print(f"Using input normalization: {normalize}")
+    
+    # Override normalize if --no_normalize flag is provided
+    if args.no_normalize:
+        normalize = False
+        print("Input normalization disabled by --no_normalize flag")
 
     # Evaluate model
     evaluate_model(
@@ -645,6 +668,7 @@ def main():
         device=device,
         imu_segments=args.imu_segments,
         label_filter_hz=label_filter_hz,
+        normalize=normalize,
     )
     
     # Final cleanup

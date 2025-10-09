@@ -123,9 +123,12 @@ class TCNModel(nn.Module):
         self.dropout = hyperparameter_config['dropout']  # Dropout value
         self.dilations = hyperparameter_config['dilations']  # Dilations for TemporalBlocks
         self.window_size = hyperparameter_config['window_size']  # Get the sequence length
+        self.norm = hyperparameter_config.get('norm', 'weight_norm')  # Normalization type (default: weight_norm)
+        self.activation = hyperparameter_config.get('activation', 'ReLU')  # Activation function (default: ReLU)
         
         self.tcn = TemporalConvNet(self.input_size, self.num_channels, self.number_of_layers, 
-                                   self.kernel_size, self.dropout, self.dilations)
+                                   self.kernel_size, self.dropout, self.dilations, 
+                                   norm=self.norm, activation=self.activation)
         self.linear = nn.Linear(self.num_channels[-1] * self.window_size, self.output_size)
         
         # Initialize the final linear layer with small weights for stability
@@ -134,6 +137,7 @@ class TCNModel(nn.Module):
         
         print(f"\nTCN parameter #: {sum(p.numel() for p in self.tcn.parameters())}")
         print(f"FCNN parameter #: {sum(p.numel() for p in self.linear.parameters())}")
+        print(f"Normalization: {self.norm}, Activation: {self.activation}")
 
     def forward(self, x):
         # x shape: (batch_size, input_size, time window size = sequence length)
