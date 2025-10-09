@@ -23,6 +23,10 @@ class DataHandler:
         self.augment = hyperparam_config.get("augment", False)
         self.label_filter_hz = float(hyperparam_config.get("label_filter_hz", 6.0))
         self.normalize = hyperparam_config.get("normalize", True)
+        
+        # Detect dataset type for sampling rate adjustment
+        self.dataset_type = self._detect_dataset_type()
+        print(f"Detected dataset type: {self.dataset_type}")
             
         # Placeholder for data
         self.train_data = None
@@ -40,6 +44,15 @@ class DataHandler:
             self.input_std = np.load(os.path.join(self.pretrained_model_path, 'input_std.npy'))
             self.label_mean = np.load(os.path.join(self.pretrained_model_path, 'label_mean.npy'))
             self.label_std = np.load(os.path.join(self.pretrained_model_path, 'label_std.npy'))
+    
+    def _detect_dataset_type(self) -> str:
+        """Detect dataset type based on data_root path to determine sampling rate."""
+        if 'Canonical_Camargo' in self.data_root:
+            return 'camargo'  # Higher sampling rate, needs downsampling
+        elif 'Canonical_MeMo' in self.data_root:
+            return 'memo'     # Standard sampling rate
+        else:
+            return 'unknown'  # Default to no downsampling
         
     def load_data(self, train_data_partition: List[str], train_data_condition: List[str], 
                   test_data_partition: List[str], test_data_partition_2: Optional[List[str]] = None, 
@@ -62,7 +75,8 @@ class DataHandler:
             normalize=self.normalize,
             imu_segments=self.imu_segments,
             augment=self.augment,
-            label_filter_hz=self.label_filter_hz
+            label_filter_hz=self.label_filter_hz,
+            dataset_type=self.dataset_type
         )
         
         # Retrieve mean and std from training data
@@ -83,7 +97,8 @@ class DataHandler:
             normalize=self.normalize,
             imu_segments=self.imu_segments,
             augment=False,
-            label_filter_hz=self.label_filter_hz
+            label_filter_hz=self.label_filter_hz,
+            dataset_type=self.dataset_type
         )
         # Replace the mean and std of test data with that of training data
         self.test_data.input_mean = self.input_mean
@@ -168,7 +183,8 @@ class LoadData(Dataset):
                  label_mean: Optional[np.ndarray] = None, label_std: Optional[np.ndarray] = None,
                  normalize: bool = True, imu_segments: Optional[List[str]] = None,
                  augment: bool = False,
-                 label_filter_hz: float = 6.0):
+                 label_filter_hz: float = 6.0,
+                 dataset_type: str = 'unknown'):
         self.window_size = window_size
         self.input_list = []
         self.label_list = []
@@ -180,6 +196,7 @@ class LoadData(Dataset):
         self.imu_segments = imu_segments if imu_segments is not None else ["pelvis", "femur"]
         self.augment = augment and (data_type.startswith("train"))
         self.label_filter_hz = float(label_filter_hz)
+        self.dataset_type = dataset_type
 
         for subject_num, subject in enumerate(partitions):  # Multiple partitions
             self.subject_data_length.append(0)  # Append 0 for each subject
@@ -486,6 +503,23 @@ class LoadData(Dataset):
         # Concatenate all data (matching reference implementation)
         self.input = np.concatenate(self.input_list, axis=0)
         self.label = np.concatenate(self.label_list, axis=0)
+
+        # Apply downsampling for Camargo dataset (higher sampling rate)
+        if self.dataset_type == 'camargo':
+            print(f"Applying downsampling (::2) for Camargo dataset...")
+            original_input_size = self.input.shape[0]
+            original_label_size = self.label.shape[0]
+            
+            # Downsample by taking every other datapoint
+            self.input = self.input[::2]
+            self.label = self.label[::2]
+            
+            # Update subject_data_length to reflect downsampling
+            for i in range(len(self.subject_data_length)):
+                self.subject_data_length[i] = self.subject_data_length[i] // 2
+            
+            print(f"Downsampled input: {original_input_size} -> {self.input.shape[0]} samples")
+            print(f"Downsampled label: {original_label_size} -> {self.label.shape[0]} samples")
 
         print(f'\ninput {self.data_type} dataset size: {np.shape(self.input)}')
         print(f'label {self.data_type} dataset size: {np.shape(self.label)}')
