@@ -283,8 +283,8 @@ def process_memo_trial(trial_dir: Path, output_root: Path, transform_gyro: bool 
 
             # Right hip mappings
             # Flexion positive required -> flip sign if source is extension positive
-            assign_if_present('rhipmoment_x', 'hip_flexion_r_moment')
-            assign_if_present('rhipmoment_y', 'hip_adduction_r_moment')
+            assign_if_present('rhipmoment_x', 'hip_adduction_r_moment')
+            assign_if_present('rhipmoment_y', 'hip_flexion_r_moment')
             assign_if_present('rhipmoment_z', 'hip_rotation_r_moment')
             # Left hip mappings
             assign_if_present('lhipmoment_x', 'hip_adduction_l_moment')
