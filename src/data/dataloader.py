@@ -358,6 +358,9 @@ class LoadData(Dataset):
                     
                     if hip_flexion_r_col:
                         label_buffer_R = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
+                        # FIXME: Flip right hip flexion moment sign for Camargo dataset
+                        if self.dataset_type == 'camargo':
+                            label_buffer_R = -label_buffer_R
                     if hip_flexion_l_col:
                         label_buffer_L = label_df[hip_flexion_l_col[0]].values.reshape(-1, 1)
                     
@@ -374,6 +377,9 @@ class LoadData(Dataset):
                             
                             if hip_r_col:
                                 label_buffer_R = label_df[hip_r_col[0]].values.reshape(-1, 1)
+                                # FIXME: Flip right hip flexion moment sign for Camargo dataset
+                                if self.dataset_type == 'camargo':
+                                    label_buffer_R = -label_buffer_R
                             if hip_l_col:
                                 label_buffer_L = label_df[hip_l_col[0]].values.reshape(-1, 1)
                         
@@ -504,7 +510,7 @@ class LoadData(Dataset):
         self.input = np.concatenate(self.input_list, axis=0)
         self.label = np.concatenate(self.label_list, axis=0)
 
-        # Apply downsampling for Camargo dataset (higher sampling rate)
+        #FIXME: Apply downsampling for Camargo dataset (higher sampling rate) --> remove hardcoding in future
         if self.dataset_type == 'camargo':
             print(f"Applying downsampling (::2) for Camargo dataset...")
             original_input_size = self.input.shape[0]
