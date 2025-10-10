@@ -51,6 +51,16 @@ def load_normalization_params(save_dir: str):
     return input_mean, input_std, label_mean, label_std
 
 
+def detect_dataset_type(data_root: str) -> str:
+    """Detect dataset type based on data_root path to determine sampling rate and sign conventions."""
+    if 'Canonical_Camargo' in data_root:
+        return 'camargo'  # Higher sampling rate, needs downsampling, different sign convention
+    elif 'Canonical_MeMo' in data_root:
+        return 'memo'     # Standard sampling rate, standard sign convention
+    else:
+        return 'unknown'  # Default to no special handling
+
+
 def butter_lowpass_zero_phase(data: np.ndarray, cutoff_hz: float = 6.0, fs_hz: float = 100.0, order: int = 4) -> np.ndarray:
     """Apply zero-phase Butterworth low-pass filter to match dataloader preprocessing."""
     if data is None or data.size == 0:
@@ -81,6 +91,7 @@ def predict_on_trial(
     imu_segments: list,
     label_filter_hz: float = 6.0,
     normalize: bool = True,
+    dataset_type: str = 'unknown',
 ):
     """Make predictions on a single trial."""
     # Load IMU data
@@ -197,6 +208,9 @@ def predict_on_trial(
     true_labels = []
     if hip_flexion_r_col:
         true_data = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
+        # FIXME: Flip right hip flexion moment sign for Camargo dataset
+        if dataset_type == 'camargo':
+            true_data = -true_data
         # Apply the same low-pass filter as used in training
         true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
         # Get labels corresponding to the last time point of each window
@@ -222,6 +236,9 @@ def predict_on_trial(
 
             if hip_r_col:
                 true_data = label_df[hip_r_col[0]].values.reshape(-1, 1)
+                # FIXME: Flip right hip flexion moment sign for Camargo dataset
+                if dataset_type == 'camargo':
+                    true_data = -true_data
                 # Apply the same low-pass filter as used in training
                 true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
                 for i in range(num_windows):
@@ -267,6 +284,10 @@ def evaluate_model(
     normalize: bool = True,
 ):
     """Evaluate model on test subjects."""
+
+    # Detect dataset type for proper handling
+    dataset_type = detect_dataset_type(data_root)
+    print(f"Detected dataset type: {dataset_type}")
 
     # Load normalization parameters
     input_mean, input_std, label_mean, label_std = load_normalization_params(save_dir)
@@ -360,6 +381,7 @@ def evaluate_model(
                     config_imu_segments,
                     label_filter_hz,
                     normalize,
+                    dataset_type,
                 )
 
                 if pred is not None:
