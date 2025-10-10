@@ -110,6 +110,8 @@ def main():
         'norm': args.norm,  # Normalization type for TCN layers
         'activation': args.activation,  # Activation function for TCN layers
     })
+    
+    print(f"Training will run for {config['epochs']} epochs")
 
     # Unilateral controller: always output_size=1, train using both sides stacked (reference style)
     config['output_size'] = 1
