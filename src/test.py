@@ -283,10 +283,7 @@ def evaluate_model(
     imu_segments: list,
     label_filter_hz: float = 6.0,
     normalize: bool = True,
-    wandb_project: str = None,
-    wandb_entity: str = None,
-    wandb_run_name: str = None,
-    wandb_tags: list = None,
+    args=None,
 ):
     """Evaluate model on test subjects."""
 
@@ -294,28 +291,45 @@ def evaluate_model(
     dataset_type = detect_dataset_type(data_root)
     print(f"Detected dataset type: {dataset_type}")
 
-    # Initialize wandb if parameters are provided
-    wandb_run = None
-    if wandb_project is not None:
+    # Initialize wandb (same pattern as train.py)
+    if not args.no_wandb:
+        # Generate wandb run name if not provided
+        if args.wandb_name is None:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            wandb_run_name = f"tcn_evaluation_{timestamp}"
+        else:
+            wandb_run_name = args.wandb_name
+        
+        # Add experiment metadata
+        experiment_config = {
+            'model_path': model_path,
+            'data_root': data_root,
+            'subjects': subjects,
+            'conditions': conditions,
+            'window_size': window_size,
+            'imu_segments': imu_segments,
+            'label_filter_hz': label_filter_hz,
+            'normalize': normalize,
+            'dataset_type': dataset_type,
+            'device': str(torch.device('cuda' if torch.cuda.is_available() else 'cpu')),
+            'pytorch_version': torch.__version__,
+        }
+        
         wandb.init(
-            project=wandb_project,
-            entity=wandb_entity,
+            project=args.wandb_project,
+            entity=args.wandb_entity,
             name=wandb_run_name,
-            tags=wandb_tags or ['evaluation', 'tcn', 'joint_moment'],
-            config={
-                'model_path': model_path,
-                'data_root': data_root,
-                'subjects': subjects,
-                'conditions': conditions,
-                'window_size': window_size,
-                'imu_segments': imu_segments,
-                'label_filter_hz': label_filter_hz,
-                'normalize': normalize,
-                'dataset_type': dataset_type,
-            }
+            config=experiment_config,
+            tags=args.wandb_tags + ['evaluation', 'tcn', 'joint_moment'],
+            notes=f"TCN model evaluation. Test: {len(subjects)} subjects, Conditions: {conditions}"
         )
         wandb_run = wandb.run
+        
         print(f"Wandb run initialized: {wandb_run.url}")
+    else:
+        wandb_run = None
+        print("Wandb logging disabled")
 
     # Load normalization parameters
     input_mean, input_std, label_mean, label_std = load_normalization_params(save_dir)
@@ -596,8 +610,13 @@ def evaluate_model(
                 trial_rmse = np.sqrt(np.mean((trial_pred_clean - trial_true_clean) ** 2))
                 trial_mae = np.mean(np.abs(trial_pred_clean - trial_true_clean))
                 
+                # Calculate R² score for this trial
+                ss_res = np.sum((trial_true_clean - trial_pred_clean) ** 2)
+                ss_tot = np.sum((trial_true_clean - np.mean(trial_true_clean)) ** 2)
+                trial_r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+                
                 # Add metrics to plot
-                ax.text(0.02, 0.98, f'Trial RMSE: {trial_rmse:.4f} N-m/kg\nTrial MAE: {trial_mae:.4f} N-m/kg', 
+                ax.text(0.02, 0.98, f'Trial RMSE: {trial_rmse:.4f} N-m/kg\nTrial MAE: {trial_mae:.4f} N-m/kg\nTrial R²: {trial_r2:.4f}', 
                         transform=ax.transAxes, fontsize=10,
                         verticalalignment='top',
                         bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
@@ -697,20 +716,24 @@ def main():
         help="Disable input normalization (use raw IMU data)",
     )
     parser.add_argument(
-        "--wandb_project", type=str, default=None,
-        help="Wandb project name for logging (optional)"
+        "--wandb_project", type=str, default='transfer-learning',
+        help="Wandb project name for logging"
     )
     parser.add_argument(
         "--wandb_entity", type=str, default=None,
-        help="Wandb entity name (optional)"
+        help="Wandb entity name"
     )
     parser.add_argument(
-        "--wandb_run_name", type=str, default=None,
-        help="Wandb run name (optional)"
+        "--wandb_name", type=str, default=None,
+        help="Wandb run name (auto-generated if not provided)"
     )
     parser.add_argument(
-        "--wandb_tags", nargs="+", default=None,
-        help="Wandb tags for the experiment (optional)"
+        "--wandb_tags", nargs="+", default=[],
+        help="Wandb tags for the experiment"
+    )
+    parser.add_argument(
+        "--no_wandb", action='store_true',
+        help="Disable wandb logging"
     )
     # --denormalize_gt removed: ground truth should not be denormalized
 
@@ -760,10 +783,7 @@ def main():
         imu_segments=args.imu_segments,
         label_filter_hz=label_filter_hz,
         normalize=normalize,
-        wandb_project=args.wandb_project,
-        wandb_entity=args.wandb_entity,
-        wandb_run_name=args.wandb_run_name,
-        wandb_tags=args.wandb_tags,
+        args=args,
     )
     
     # Final cleanup
