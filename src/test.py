@@ -26,6 +26,7 @@ matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy import signal
+import wandb
 
 from model.tcn import TCNModel
 from data.dataloader import DataHandler
@@ -282,12 +283,39 @@ def evaluate_model(
     imu_segments: list,
     label_filter_hz: float = 6.0,
     normalize: bool = True,
+    wandb_project: str = None,
+    wandb_entity: str = None,
+    wandb_run_name: str = None,
+    wandb_tags: list = None,
 ):
     """Evaluate model on test subjects."""
 
     # Detect dataset type for proper handling
     dataset_type = detect_dataset_type(data_root)
     print(f"Detected dataset type: {dataset_type}")
+
+    # Initialize wandb if parameters are provided
+    wandb_run = None
+    if wandb_project is not None:
+        wandb.init(
+            project=wandb_project,
+            entity=wandb_entity,
+            name=wandb_run_name,
+            tags=wandb_tags or ['evaluation', 'tcn', 'joint_moment'],
+            config={
+                'model_path': model_path,
+                'data_root': data_root,
+                'subjects': subjects,
+                'conditions': conditions,
+                'window_size': window_size,
+                'imu_segments': imu_segments,
+                'label_filter_hz': label_filter_hz,
+                'normalize': normalize,
+                'dataset_type': dataset_type,
+            }
+        )
+        wandb_run = wandb.run
+        print(f"Wandb run initialized: {wandb_run.url}")
 
     # Load normalization parameters
     input_mean, input_std, label_mean, label_std = load_normalization_params(save_dir)
@@ -441,6 +469,20 @@ def evaluate_model(
     else:
         print(f"✓ Scale appears reasonable")
 
+    # Log metrics to wandb
+    if wandb_run is not None:
+        wandb.log({
+            'evaluation/rmse': rmse,
+            'evaluation/mae': mae,
+            'evaluation/r2_score': r2_score,
+            'evaluation/mse': mse,
+            'evaluation/valid_samples': len(all_predictions_clean),
+            'evaluation/total_samples': len(all_predictions),
+            'evaluation/gt_mean_abs': gt_mean_abs,
+            'evaluation/pred_mean_abs': pred_mean_abs,
+            'evaluation/scale_ratio': scale_ratio,
+        })
+
     # Offset and range diagnostics
     gt_mean = float(np.mean(all_true_labels_clean))
     pred_mean = float(np.mean(all_predictions_clean))
@@ -497,9 +539,13 @@ def evaluate_model(
     ax.set_aspect('equal', adjustable='box')
 
     plt.tight_layout()
-    plt.savefig(
-        os.path.join(save_dir, "evaluation_scatter.png"), dpi=300, bbox_inches="tight"
-    )
+    scatter_plot_path = os.path.join(save_dir, "evaluation_scatter.png")
+    plt.savefig(scatter_plot_path, dpi=300, bbox_inches="tight")
+    
+    # Log scatter plot to wandb
+    if wandb_run is not None:
+        wandb.log({"evaluation/scatter_plot": wandb.Image(scatter_plot_path)})
+    
     plt.close()
 
     # Plot 2: Time series plots for sample trials
@@ -565,11 +611,13 @@ def evaluate_model(
             plt.tight_layout()
             # Save with trial-specific name (sanitize path)
             safe_trial_name = trial_name.replace("/", "_").replace("\\", "_")
-            plt.savefig(
-                os.path.join(save_dir, f"timeseries_{safe_trial_name}.png"),
-                dpi=300,
-                bbox_inches="tight",
-            )
+            timeseries_plot_path = os.path.join(save_dir, f"timeseries_{safe_trial_name}.png")
+            plt.savefig(timeseries_plot_path, dpi=300, bbox_inches="tight")
+            
+            # Log time series plot to wandb
+            if wandb_run is not None:
+                wandb.log({f"evaluation/timeseries_{safe_trial_name}": wandb.Image(timeseries_plot_path)})
+            
             plt.close()
 
             print(f"  Saved time series plot: timeseries_{safe_trial_name}.png")
@@ -595,6 +643,11 @@ def evaluate_model(
     # Explicit cleanup
     plt.close('all')  # Close all matplotlib figures
     gc.collect()  # Force garbage collection
+    
+    # Finish wandb run
+    if wandb_run is not None:
+        wandb.finish()
+    
     print("Evaluation completed successfully!")
 
 
@@ -642,6 +695,22 @@ def main():
         "--no_normalize",
         action="store_true",
         help="Disable input normalization (use raw IMU data)",
+    )
+    parser.add_argument(
+        "--wandb_project", type=str, default=None,
+        help="Wandb project name for logging (optional)"
+    )
+    parser.add_argument(
+        "--wandb_entity", type=str, default=None,
+        help="Wandb entity name (optional)"
+    )
+    parser.add_argument(
+        "--wandb_run_name", type=str, default=None,
+        help="Wandb run name (optional)"
+    )
+    parser.add_argument(
+        "--wandb_tags", nargs="+", default=None,
+        help="Wandb tags for the experiment (optional)"
     )
     # --denormalize_gt removed: ground truth should not be denormalized
 
@@ -691,6 +760,10 @@ def main():
         imu_segments=args.imu_segments,
         label_filter_hz=label_filter_hz,
         normalize=normalize,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
+        wandb_run_name=args.wandb_run_name,
+        wandb_tags=args.wandb_tags,
     )
     
     # Final cleanup
