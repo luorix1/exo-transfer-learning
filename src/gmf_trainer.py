@@ -23,7 +23,8 @@ class GMFTrainer:
         device: torch.device,
         optimizer_ge: Optimizer,
         optimizer_gd: Optimizer,
-        scheduler: Optional[ReduceLROnPlateau],
+        scheduler_ge: Optional[ReduceLROnPlateau],
+        scheduler_gd: Optional[ReduceLROnPlateau],
         data_handler,
         config: Dict[str, Any],
         save_dir: str,
@@ -34,7 +35,8 @@ class GMFTrainer:
         # Two optimizers: Phase A (Generator + Estimator), Phase B (Generator + Decoder)
         self.optimizer_ge = optimizer_ge
         self.optimizer_gd = optimizer_gd
-        self.scheduler = scheduler
+        self.scheduler_ge = scheduler_ge
+        self.scheduler_gd = scheduler_gd
         self.data_handler = data_handler
         self.config = config
         self.save_dir = save_dir
@@ -45,6 +47,7 @@ class GMFTrainer:
         self.gmf_weight = float(config.get('gmf_loss_weight', 1.0))
         self.decoder_weight = float(config.get('decoder_loss_weight', 0.05))
         self.phaseA_decoder_coeff = float(config.get('phaseA_decoder_coeff', 0.0))
+        self.warmup_epochs = int(config.get('warmup_epochs', 0))
 
         self.label_mean_tensor = torch.tensor(self.data_handler.label_mean, device=self.device)
         self.label_std_tensor = torch.tensor(self.data_handler.label_std, device=self.device)
@@ -52,6 +55,7 @@ class GMFTrainer:
         self.best_val_loss = float('inf')
         self.best_epoch = -1
         self.best_checkpoint_path: Optional[str] = None
+        self.current_epoch = 0
 
         self.train_accuracy_history = []
         self.val_accuracy_history = []
@@ -118,15 +122,19 @@ class GMFTrainer:
             for p in self.model.estimator.parameters():
                 p.requires_grad = False
 
-            self.optimizer_gd.zero_grad()
-            # Recompute GMF label and detach; require grad for generator pathway
-            gmf_generated_b = self.model.generate_gmf(params, targets).detach().requires_grad_(True)
-            decoded_from_generator = self.model.decode(params, gmf_generated_b)
-            l2 = self.criterion(decoded_from_generator, targets)
-            loss_phase_b = self.decoder_weight * l2
-            loss_phase_b.backward()
-            torch.nn.utils.clip_grad_norm_(list(self.model.generator.parameters()) + list(self.model.decoder.parameters()), max_norm=1.0)
-            self.optimizer_gd.step()
+            if self.current_epoch >= self.warmup_epochs:
+                self.optimizer_gd.zero_grad()
+                # Recompute GMF label and detach; require grad for generator pathway
+                gmf_generated_b = self.model.generate_gmf(params, targets).detach().requires_grad_(True)
+                decoded_from_generator = self.model.decode(params, gmf_generated_b)
+                l2 = self.criterion(decoded_from_generator, targets)
+                loss_phase_b = self.decoder_weight * l2
+                loss_phase_b.backward()
+                torch.nn.utils.clip_grad_norm_(list(self.model.generator.parameters()) + list(self.model.decoder.parameters()), max_norm=1.0)
+                self.optimizer_gd.step()
+            else:
+                # During warmup, use current generator for metrics only
+                decoded_from_generator = self.model.decode(params, gmf_generated)
         else:
             # In eval, compute decoded outputs for metrics
             decoded_from_generator = self.model.decode(params, gmf_generated)
@@ -238,6 +246,7 @@ class GMFTrainer:
 
     def fit(self, train_loader, val_loader) -> None:
         for epoch in range(self.config['epochs']):
+            self.current_epoch = epoch
             train_metrics = self.train_epoch(train_loader)
             val_metrics = self.eval_epoch(val_loader)
 
@@ -259,11 +268,14 @@ class GMFTrainer:
                     'val/accuracy': val_metrics['accuracy'],
                     'val/L1': val_metrics['l1'],
                     'val/L2': val_metrics['l2'],
+                    'lr/ge': self.optimizer_ge.param_groups[0]['lr'],
+                    'lr/gd': self.optimizer_gd.param_groups[0]['lr'],
                 })
 
-            if self.scheduler is not None:
-                # Step scheduler on validation RMSE per spec
-                self.scheduler.step(val_metrics['rmse'])
+            if self.scheduler_ge is not None:
+                self.scheduler_ge.step(val_metrics['rmse'])
+            if self.scheduler_gd is not None:
+                self.scheduler_gd.step(val_metrics['rmse'])
 
             if val_metrics['rmse'] < self.best_val_loss:
                 self.best_val_loss = val_metrics['rmse']

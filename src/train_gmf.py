@@ -41,6 +41,11 @@ def parse_args():
     parser.add_argument('--gmf_loss_weight', type=float, default=1.0, help='Weight for GMF alignment loss (L1)')
     parser.add_argument('--decoder_loss_weight', type=float, default=0.05, help='Weight for decoder reconstruction loss (L2)')
     parser.add_argument('--seed', type=int, default=1000, help='Random seed for reproducibility')
+    parser.add_argument('--lr_ge', type=float, default=None, help='Override learning rate for Generator+Estimator')
+    parser.add_argument('--lr_gd', type=float, default=None, help='Override learning rate for Generator+Decoder')
+    parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay for optimizers')
+    parser.add_argument('--warmup_epochs', type=int, default=0, help='Number of warmup epochs to run Phase A only')
+    parser.add_argument('--phaseA_decoder_coeff', type=float, default=0.0, help='Optional small L2 coefficient in Phase A (no-grad to D)')
     parser.add_argument('--no_normalize', action='store_true', help='Disable normalization of inputs/labels')
     return parser.parse_args()
 
@@ -68,6 +73,8 @@ def main():
         'imu_segments': args.imu_segments,
         'gmf_loss_weight': args.gmf_loss_weight,
         'decoder_loss_weight': args.decoder_loss_weight,
+        'warmup_epochs': args.warmup_epochs,
+        'phaseA_decoder_coeff': args.phaseA_decoder_coeff,
         'wandb_project': args.wandb_project,
         'wandb_entity': args.wandb_entity,
         'input_size': input_size,
@@ -141,16 +148,21 @@ def main():
     # Two optimizers: GE (generator+estimator) and GD (generator+decoder)
     params_ge = list(model.generator.parameters()) + list(model.estimator.parameters())
     params_gd = list(model.generator.parameters()) + list(model.decoder.parameters())
-    optimizer_ge = Adam(params_ge, lr=config['learning_rate'])
-    optimizer_gd = Adam(params_gd, lr=config['learning_rate'])
-    scheduler = ReduceLROnPlateau(optimizer_ge, mode='min', patience=5, factor=0.5, verbose=True)
+    lr_ge = float(args.lr_ge) if args.lr_ge is not None else float(config['learning_rate'])
+    lr_gd = float(args.lr_gd) if args.lr_gd is not None else float(config['learning_rate'])
+    wd = float(args.weight_decay)
+    optimizer_ge = Adam(params_ge, lr=lr_ge, weight_decay=wd)
+    optimizer_gd = Adam(params_gd, lr=lr_gd, weight_decay=wd)
+    scheduler_ge = ReduceLROnPlateau(optimizer_ge, mode='min', patience=5, factor=0.5, verbose=True)
+    scheduler_gd = ReduceLROnPlateau(optimizer_gd, mode='min', patience=5, factor=0.5, verbose=True)
 
     trainer = GMFTrainer(
         model=model,
         device=device,
         optimizer_ge=optimizer_ge,
         optimizer_gd=optimizer_gd,
-        scheduler=scheduler,
+        scheduler_ge=scheduler_ge,
+        scheduler_gd=scheduler_gd,
         data_handler=data_handler,
         config=config,
         save_dir=args.save_dir,
