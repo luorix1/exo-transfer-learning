@@ -44,6 +44,7 @@ class GMFTrainer:
         # Loss weights: w1 for L1 (alignment), w2 for L2 (decodability)
         self.gmf_weight = float(config.get('gmf_loss_weight', 1.0))
         self.decoder_weight = float(config.get('decoder_loss_weight', 0.05))
+        self.phaseA_decoder_coeff = float(config.get('phaseA_decoder_coeff', 0.0))
 
         self.label_mean_tensor = torch.tensor(self.data_handler.label_mean, device=self.device)
         self.label_std_tensor = torch.tensor(self.data_handler.label_std, device=self.device)
@@ -83,9 +84,9 @@ class GMFTrainer:
         gmf_generated = self.model.generate_gmf(params, targets)
         gmf_estimated = self.model.estimator(inputs)
 
-        # Phase A: GMF formation (update Generator + Estimator on L1, backprop w2*L2 through Decoder to Generator)
+        # Phase A: GMF formation (update Generator + Estimator on L1; optionally include tiny L2 with no grad to D)
         if train:
-            # Freeze decoder params for Phase A but keep graph to backprop to Generator
+            # Freeze decoder params for Phase A; do not backprop through decoder by default
             for p in self.model.decoder.parameters():
                 p.requires_grad = False
             for p in self.model.generator.parameters():
@@ -94,10 +95,15 @@ class GMFTrainer:
                 p.requires_grad = True
 
             self.optimizer_ge.zero_grad()
-            decoded_from_generator_phaseA = self.model.decode(params, gmf_generated)
             l1 = self.criterion(gmf_estimated, gmf_generated)
-            l2_gen = self.criterion(decoded_from_generator_phaseA, targets)
-            loss_phase_a = self.gmf_weight * l1 + self.decoder_weight * l2_gen
+            # Optional tiny L2 component using no-grad path
+            if self.phaseA_decoder_coeff != 0.0:
+                with torch.no_grad():
+                    m_dec_ng = self.model.decode(params, gmf_generated)
+                    l2_gen = self.criterion(m_dec_ng, targets)
+                loss_phase_a = self.gmf_weight * l1 + float(self.phaseA_decoder_coeff) * l2_gen
+            else:
+                loss_phase_a = self.gmf_weight * l1
             loss_phase_a.backward()
             torch.nn.utils.clip_grad_norm_(list(self.model.generator.parameters()) + list(self.model.estimator.parameters()), max_norm=1.0)
             self.optimizer_ge.step()
@@ -113,8 +119,8 @@ class GMFTrainer:
                 p.requires_grad = False
 
             self.optimizer_gd.zero_grad()
-            # Recompute gmf from current generator params for correct gradients
-            gmf_generated_b = self.model.generate_gmf(params, targets)
+            # Recompute GMF label and detach; require grad for generator pathway
+            gmf_generated_b = self.model.generate_gmf(params, targets).detach().requires_grad_(True)
             decoded_from_generator = self.model.decode(params, gmf_generated_b)
             l2 = self.criterion(decoded_from_generator, targets)
             loss_phase_b = self.decoder_weight * l2
