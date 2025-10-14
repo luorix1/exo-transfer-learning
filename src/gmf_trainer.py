@@ -21,7 +21,8 @@ class GMFTrainer:
         self,
         model: nn.Module,
         device: torch.device,
-        optimizer: Optimizer,
+        optimizer_ge: Optimizer,
+        optimizer_gd: Optimizer,
         scheduler: Optional[ReduceLROnPlateau],
         data_handler,
         config: Dict[str, Any],
@@ -30,7 +31,9 @@ class GMFTrainer:
     ) -> None:
         self.model = model
         self.device = device
-        self.optimizer = optimizer
+        # Two optimizers: Phase A (Generator + Estimator), Phase B (Generator + Decoder)
+        self.optimizer_ge = optimizer_ge
+        self.optimizer_gd = optimizer_gd
         self.scheduler = scheduler
         self.data_handler = data_handler
         self.config = config
@@ -38,8 +41,9 @@ class GMFTrainer:
         self.run = wandb_run
 
         self.criterion = nn.MSELoss()
+        # Loss weights: w1 for L1 (alignment), w2 for L2 (decodability)
         self.gmf_weight = float(config.get('gmf_loss_weight', 1.0))
-        self.decoder_weight = float(config.get('decoder_loss_weight', 1.0))
+        self.decoder_weight = float(config.get('decoder_loss_weight', 0.05))
 
         self.label_mean_tensor = torch.tensor(self.data_handler.label_mean, device=self.device)
         self.label_std_tensor = torch.tensor(self.data_handler.label_std, device=self.device)
@@ -75,22 +79,60 @@ class GMFTrainer:
         targets = targets.to(self.device)
         params = params.to(self.device)
 
-        if train:
-            self.optimizer.zero_grad()
-
+        # Forward passes used in both phases
         gmf_generated = self.model.generate_gmf(params, targets)
         gmf_estimated = self.model.estimator(inputs)
-        decoded_from_generator = self.model.decode(params, gmf_generated)
+
+        # Phase A: GMF formation (update Generator + Estimator on L1, backprop w2*L2 through Decoder to Generator)
+        if train:
+            # Freeze decoder params for Phase A but keep graph to backprop to Generator
+            for p in self.model.decoder.parameters():
+                p.requires_grad = False
+            for p in self.model.generator.parameters():
+                p.requires_grad = True
+            for p in self.model.estimator.parameters():
+                p.requires_grad = True
+
+            self.optimizer_ge.zero_grad()
+            decoded_from_generator_phaseA = self.model.decode(params, gmf_generated)
+            l1 = self.criterion(gmf_estimated, gmf_generated)
+            l2_gen = self.criterion(decoded_from_generator_phaseA, targets)
+            loss_phase_a = self.gmf_weight * l1 + self.decoder_weight * l2_gen
+            loss_phase_a.backward()
+            torch.nn.utils.clip_grad_norm_(list(self.model.generator.parameters()) + list(self.model.estimator.parameters()), max_norm=1.0)
+            self.optimizer_ge.step()
+
+        # Phase B: Decoding (update Generator + Decoder on L2)
+        if train:
+            # Unfreeze decoder; freeze estimator
+            for p in self.model.decoder.parameters():
+                p.requires_grad = True
+            for p in self.model.generator.parameters():
+                p.requires_grad = True
+            for p in self.model.estimator.parameters():
+                p.requires_grad = False
+
+            self.optimizer_gd.zero_grad()
+            # Recompute gmf from current generator params for correct gradients
+            gmf_generated_b = self.model.generate_gmf(params, targets)
+            decoded_from_generator = self.model.decode(params, gmf_generated_b)
+            l2 = self.criterion(decoded_from_generator, targets)
+            loss_phase_b = self.decoder_weight * l2
+            loss_phase_b.backward()
+            torch.nn.utils.clip_grad_norm_(list(self.model.generator.parameters()) + list(self.model.decoder.parameters()), max_norm=1.0)
+            self.optimizer_gd.step()
+        else:
+            # In eval, compute decoded outputs for metrics
+            decoded_from_generator = self.model.decode(params, gmf_generated)
+
+        # For metrics, always decode from estimator to approximate test-time usage
         decoded_from_estimator = self.model.decode(params, gmf_estimated)
 
-        loss_gmf = self.criterion(gmf_estimated, gmf_generated)
-        loss_decoder = self.criterion(decoded_from_generator, targets)
-        loss = self.gmf_weight * loss_gmf + self.decoder_weight * loss_decoder
-
-        if train:
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
+        # Define losses for logging (no grad)
+        with torch.no_grad():
+            l1_val = self.criterion(gmf_estimated, gmf_generated).item()
+            l2_val = self.criterion(decoded_from_generator, targets).item()
+            total_loss = self.gmf_weight * l1_val + self.decoder_weight * l2_val
 
         preds_denorm = decoded_from_estimator * self.label_std_tensor + self.label_mean_tensor
         targets_denorm = targets * self.label_std_tensor + self.label_mean_tensor
@@ -99,16 +141,16 @@ class GMFTrainer:
         accuracy = self._compute_accuracy(decoded_from_estimator, targets)
 
         return {
-            'loss': loss.item(),
-            'gmf_loss': loss_gmf.item(),
-            'decoder_loss': loss_decoder.item(),
+            'loss': total_loss,
+            'l1': l1_val,
+            'l2': l2_val,
             'rmse': rmse,
             'accuracy': accuracy,
         }
 
     def train_epoch(self, train_loader) -> Dict[str, float]:
         self.model.train()
-        metrics = {'loss': 0.0, 'gmf_loss': 0.0, 'decoder_loss': 0.0, 'rmse': 0.0, 'accuracy': 0.0}
+        metrics = {'loss': 0.0, 'l1': 0.0, 'l2': 0.0, 'rmse': 0.0, 'accuracy': 0.0}
         batch_bar = tqdm(total=len(train_loader), dynamic_ncols=True, leave=False, desc='Train')
 
         for batch_idx, batch in enumerate(train_loader, start=1):
@@ -125,7 +167,7 @@ class GMFTrainer:
 
     def eval_epoch(self, val_loader) -> Dict[str, float]:
         self.model.eval()
-        metrics = {'loss': 0.0, 'gmf_loss': 0.0, 'decoder_loss': 0.0, 'rmse': 0.0, 'accuracy': 0.0}
+        metrics = {'loss': 0.0, 'l1': 0.0, 'l2': 0.0, 'rmse': 0.0, 'accuracy': 0.0}
         batch_bar = tqdm(total=len(val_loader), dynamic_ncols=True, leave=False, desc='Val')
 
         with torch.no_grad():
@@ -143,7 +185,7 @@ class GMFTrainer:
 
     def test(self, test_loader) -> Dict[str, float]:
         self.model.eval()
-        metrics = {'rmse': 0.0, 'mae': 0.0}
+        metrics = {'loss': 0.0, 'rmse': 0.0, 'mae': 0.0, 'accuracy': 0.0}
         batches = 0
 
         with torch.no_grad():
@@ -162,8 +204,10 @@ class GMFTrainer:
                 mse = torch.mean(diff ** 2).item()
                 mae = torch.mean(torch.abs(diff)).item()
 
+                metrics['loss'] += mse
                 metrics['rmse'] += np.sqrt(mse)
                 metrics['mae'] += mae
+                metrics['accuracy'] += self._compute_accuracy(decoded, targets)
                 batches += 1
 
         if batches > 0:
@@ -202,18 +246,21 @@ class GMFTrainer:
                     'train/loss': train_metrics['loss'],
                     'train/rmse': train_metrics['rmse'],
                     'train/accuracy': train_metrics['accuracy'],
+                    'train/L1': train_metrics['l1'],
+                    'train/L2': train_metrics['l2'],
                     'val/loss': val_metrics['loss'],
                     'val/rmse': val_metrics['rmse'],
                     'val/accuracy': val_metrics['accuracy'],
-                    'train/gmf_loss': train_metrics['gmf_loss'],
-                    'val/gmf_loss': val_metrics['gmf_loss'],
+                    'val/L1': val_metrics['l1'],
+                    'val/L2': val_metrics['l2'],
                 })
 
             if self.scheduler is not None:
-                self.scheduler.step(val_metrics['loss'])
+                # Step scheduler on validation RMSE per spec
+                self.scheduler.step(val_metrics['rmse'])
 
-            if val_metrics['loss'] < self.best_val_loss:
-                self.best_val_loss = val_metrics['loss']
+            if val_metrics['rmse'] < self.best_val_loss:
+                self.best_val_loss = val_metrics['rmse']
                 self.best_epoch = epoch
                 self.save_checkpoint(epoch)
 

@@ -27,8 +27,8 @@ def parse_args():
     parser.add_argument('--conditions', nargs='+', default=['levelground'], help='Conditions to use')
     parser.add_argument('--imu_segments', nargs='+', default=['pelvis', 'femur'], help='IMU segments to use')
     parser.add_argument('--epochs', type=int, default=60, help='Number of training epochs')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
+    parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
+    parser.add_argument('--learning_rate', type=float, default=1e-3, help='Learning rate')
     parser.add_argument('--window_size', type=int, default=95, help='Temporal window size')
     parser.add_argument('--label_filter_hz', type=float, default=6.0, help='Label low-pass cutoff frequency')
     parser.add_argument('--augment', action='store_true', help='Enable augmentation during training')
@@ -37,7 +37,8 @@ def parse_args():
     parser.add_argument('--wandb_entity', type=str, default=None, help='Wandb entity name')
     parser.add_argument('--wandb_name', type=str, default=None, help='Wandb run name')
     parser.add_argument('--gmf_loss_weight', type=float, default=1.0, help='Weight for GMF alignment loss (L1)')
-    parser.add_argument('--decoder_loss_weight', type=float, default=1.0, help='Weight for decoder reconstruction loss (L2)')
+    parser.add_argument('--decoder_loss_weight', type=float, default=0.05, help='Weight for decoder reconstruction loss (L2)')
+    parser.add_argument('--seeds', type=int, default=5, help='Number of random seeds to run')
     parser.add_argument('--no_normalize', action='store_true', help='Disable normalization of inputs/labels')
     return parser.parse_args()
 
@@ -88,86 +89,103 @@ def main():
         run_name = args.wandb_name
     config['wandb_session_name'] = run_name
 
-    if not args.no_wandb:
-        wandb.init(
-            project=config['wandb_project'],
-            entity=config['wandb_entity'],
-            name=run_name,
-            config={**config, 'train_subjects': args.train_subjects, 'test_subjects': args.test_subjects},
-            tags=['gmf', 'joint_moment', 'imu'],
-        )
-        wandb_run = wandb.run
-    else:
-        wandb_run = None
+    wandb_run = None
 
-    data_handler = DataHandler(args.data_root, config)
-    data_handler.load_data(
-        train_data_partition=args.train_subjects,
-        train_data_condition=args.conditions,
-        test_data_partition=args.test_subjects,
-    )
-
-    train_indices, val_indices = data_handler.get_train_val_indices()
-    train_loader, val_loader = data_handler.create_dataloaders(train_indices, val_indices)
-    test_loader = data_handler.create_dataloaders(test_indices=1)
-
+    all_seed_metrics = []
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    param_size = 0
-    if getattr(data_handler.train_data, 'subject_params', None) is not None:
-        param_size = data_handler.train_data.subject_params.shape[1]
+    for seed_idx in range(args.seeds):
+        seed = 1000 + seed_idx
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
 
-    model = GMFModel(
-        input_size=config['input_size'],
-        output_size=config['output_size'],
-        gmf_size=config['gmf_size'],
-        generator_hidden_size=config['generator_hidden_size'],
-        generator_hidden_layers=config['generator_hidden_layers'],
-        estimator_hidden_size=config['estimator_hidden_size'],
-        decoder_hidden_size=config['decoder_hidden_size'],
-        decoder_hidden_layers=config['decoder_hidden_layers'],
-        param_size=param_size,
-    ).to(device)
+        if not args.no_wandb:
+            wandb.init(
+                project=config['wandb_project'],
+                entity=config['wandb_entity'],
+                name=f"{run_name}_seed{seed}",
+                config={**config, 'seed': seed, 'train_subjects': args.train_subjects, 'test_subjects': args.test_subjects},
+                tags=['gmf', 'joint_moment', 'imu'],
+                reinit=True,
+            )
+            wandb_run = wandb.run
+        else:
+            wandb_run = None
 
-    optimizer = Adam(model.parameters(), lr=config['learning_rate'])
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5, verbose=True)
+        data_handler = DataHandler(args.data_root, config)
+        data_handler.load_data(
+            train_data_partition=args.train_subjects,
+            train_data_condition=args.conditions,
+            test_data_partition=args.test_subjects,
+        )
 
-    trainer = GMFTrainer(
-        model=model,
-        device=device,
-        optimizer=optimizer,
-        scheduler=scheduler,
-        data_handler=data_handler,
-        config=config,
-        save_dir=args.save_dir,
-        wandb_run=wandb_run,
-    )
+        train_indices, val_indices = data_handler.get_train_val_indices()
+        train_loader, val_loader = data_handler.create_dataloaders(train_indices, val_indices)
+        test_loader = data_handler.create_dataloaders(test_indices=1)
 
-    trainer.fit(train_loader, val_loader)
-    best_epoch = trainer.load_best_model()
-    if best_epoch is not None:
-        print(f"Loaded best checkpoint from epoch {best_epoch}")
+        param_size = 0
+        if getattr(data_handler.train_data, 'subject_params', None) is not None:
+            param_size = data_handler.train_data.subject_params.shape[1]
 
-    data_handler.save_mean_std(args.save_dir)
+        model = GMFModel(
+            input_size=config['input_size'],
+            output_size=config['output_size'],
+            gmf_size=config['gmf_size'],
+            generator_hidden_size=config['generator_hidden_size'],
+            generator_hidden_layers=config['generator_hidden_layers'],
+            estimator_hidden_size=config['estimator_hidden_size'],
+            decoder_hidden_size=config['decoder_hidden_size'],
+            decoder_hidden_layers=config['decoder_hidden_layers'],
+            param_size=param_size,
+        ).to(device)
 
-    test_metrics = trainer.test(test_loader)
-    print(f"Test RMSE: {test_metrics['rmse']:.4f} Nm/kg")
-    print(f"Test MAE: {test_metrics['mae']:.4f} Nm/kg")
+        # Two optimizers: GE (generator+estimator) and GD (generator+decoder)
+        params_ge = list(model.generator.parameters()) + list(model.estimator.parameters())
+        params_gd = list(model.generator.parameters()) + list(model.decoder.parameters())
+        optimizer_ge = Adam(params_ge, lr=config['learning_rate'])
+        optimizer_gd = Adam(params_gd, lr=config['learning_rate'])
+        scheduler = ReduceLROnPlateau(optimizer_ge, mode='min', patience=5, factor=0.5, verbose=True)
 
-    if wandb_run is not None:
-        wandb.log({'test/rmse': test_metrics['rmse'], 'test/mae': test_metrics['mae']})
-        wandb.finish()
+        trainer = GMFTrainer(
+            model=model,
+            device=device,
+            optimizer_ge=optimizer_ge,
+            optimizer_gd=optimizer_gd,
+            scheduler=scheduler,
+            data_handler=data_handler,
+            config=config,
+            save_dir=os.path.join(args.save_dir, f"seed_{seed}"),
+            wandb_run=wandb_run,
+        )
 
-    config['param_size'] = param_size
-    if best_epoch is not None and trainer.best_checkpoint_path is not None:
-        config['best_epoch'] = int(best_epoch)
-        config['best_checkpoint'] = os.path.basename(trainer.best_checkpoint_path)
-    else:
-        config['best_epoch'] = None
-        config['best_checkpoint'] = None
+        trainer.fit(train_loader, val_loader)
+        best_epoch = trainer.load_best_model()
+        if best_epoch is not None:
+            print(f"Loaded best checkpoint from epoch {best_epoch}")
 
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=2)
+        data_handler.save_mean_std(os.path.join(args.save_dir, f"seed_{seed}"))
+
+        test_metrics = trainer.test(test_loader)
+        print(f"Seed {seed} - Test Loss: {test_metrics['loss']:.6f}")
+        print(f"Seed {seed} - Test RMSE: {test_metrics['rmse']:.4f} Nm/kg")
+        print(f"Seed {seed} - Test MAE: {test_metrics['mae']:.4f} Nm/kg")
+
+        if wandb_run is not None:
+            wandb.log({'test/loss': test_metrics['loss'], 'test/rmse': test_metrics['rmse'], 'test/mae': test_metrics['mae'], 'test/accuracy': test_metrics.get('accuracy', 0.0)})
+            wandb.finish()
+
+        all_seed_metrics.append(test_metrics)
+
+    # Save aggregate results summary
+    summary = {
+        'seeds': args.seeds,
+        'metrics': all_seed_metrics,
+        'learning_rate': args.learning_rate,
+        'batch_size': args.batch_size,
+    }
+    with open(os.path.join(args.save_dir, 'results_summary.json'), 'w') as f:
+        json.dump(summary, f, indent=2)
 
 
 if __name__ == '__main__':
