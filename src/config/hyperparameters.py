@@ -30,6 +30,43 @@ DEFAULT_TCN_CONFIG = {
     'wandb_entity': None,
 }
 
+# GMF-based model configuration
+DEFAULT_GMF_CONFIG = {
+    # Model architecture
+    'input_size': 6,  # Auto-adjusted based on imu_segments: 3 for single, 6 for dual
+    'output_size': 1,
+    'gmf_size': 16,  # Dimension of the generalized moment feature representation
+    'generator_hidden_size': 32,
+    'generator_hidden_layers': 5,
+    'estimator_hidden_size': 16,
+    'decoder_hidden_size': 32,
+    'decoder_hidden_layers': 5,
+
+    # Training parameters
+    'epochs': 60,
+    'batch_size': 32,
+    'learning_rate': 1e-4,
+    'number_of_workers': 0,
+    'validation_split': 0.1,
+    'dataset_proportion': 1.0,
+    'transfer_learning': False,
+    'window_size': 95,
+    'label_filter_hz': 6.0,
+    'augment': False,
+    'normalize': True,
+    'imu_segments': ['pelvis', 'femur'],
+    'use_subject_info': True,
+
+    # Loss weights
+    'gmf_loss_weight': 1.0,
+    'decoder_loss_weight': 1.0,
+
+    # Wandb configuration
+    'wandb_session_name': 'gmf_joint_moment_prediction',
+    'wandb_project': 'transfer-learning',
+    'wandb_entity': None,
+}
+
 # Larger TCN configuration for more complex patterns
 LARGE_TCN_CONFIG = {
     **DEFAULT_TCN_CONFIG,
@@ -80,6 +117,7 @@ def get_config(config_name: str = 'default'):
     """Get hyperparameter configuration by name."""
     configs = {
         'default': DEFAULT_TCN_CONFIG,
+        'gmf': DEFAULT_GMF_CONFIG,
         'large': LARGE_TCN_CONFIG,
         'small': SMALL_TCN_CONFIG,
         'transfer': TRANSFER_LEARNING_CONFIG,

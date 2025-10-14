@@ -200,6 +200,47 @@ python src/train.py \
   --wandb_tags baseline tcn
 ```
 
+## GMF-Based Pipeline
+
+The generalized moment feature (GMF) workflow uses standalone training and evaluation entrypoints so it can develop independently from the original TCN scripts.
+
+### Train the GMF Model
+
+```bash
+python src/train_gmf.py \
+  --data_root /media/metamobility3/Samsung_T5/Canonical_Camargo \
+  --train_subjects AB06 AB07 AB08 AB09 AB10 AB12 AB13 AB14 AB15 AB16 AB17 AB18 AB19 AB20 \
+  --test_subjects AB23 AB24 \
+  --conditions treadmill \
+  --imu_segments femur pelvis \
+  --epochs 10 \
+  --save_dir ./20251011_Camargo_gmf \
+  --gmf_loss_weight 1.0 \
+  --decoder_loss_weight 0.05 \
+  --no_wandb
+```
+
+The CLI mirrors the legacy `train.py` arguments:
+
+* `--train_subjects`, `--test_subjects`, `--conditions`, `--imu_segments`, and `--epochs` behave the same as in the baseline training script.
+* `--data_root` should point to a Canonical dataset that includes a `SubjectInfo.csv` file so the loader can pull body-mass and height metadata.
+* `--save_dir` is where checkpoints, normalization statistics, and the resolved configuration are written (the directory is created automatically).
+* `--gmf_loss_weight` and `--decoder_loss_weight` set the weights for the estimator–generator alignment loss (L1) and decoder reconstruction loss (L2). Leaving them unset falls back to the defaults of 1.0 for each; the example above matches the paper’s 1.0 / 0.05 split.
+* Add `--no_wandb` to disable Weights & Biases logging when offline.
+
+### Evaluate a GMF Checkpoint
+
+```bash
+python src/test_gmf.py \
+  --data_root /media/metamobility3/Samsung_T5/Canonical_Camargo \
+  --checkpoint_dir ./20251011_Camargo_gmf \
+  --test_subjects AB23 AB24 \
+  --conditions treadmill \
+  --imu_segments femur pelvis
+```
+
+The evaluation entrypoint reuses the normalization statistics and subject-parameter scaling saved during training, so no additional preprocessing is required.
+
 ### Key Arguments
 
 - `--data_root`: Path to Canonical dataset
