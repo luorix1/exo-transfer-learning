@@ -72,6 +72,10 @@ class DataHandler:
         """Detect dataset type based on data_root path to determine sampling rate."""
         if 'Canonical_Camargo' in self.data_root:
             return 'camargo'  # Higher sampling rate, needs downsampling
+        elif 'Canonical_Keaton' in self.data_root:
+            return 'keaton'  # Higher sampling rate, needs downsampling
+        elif 'Canonical_Molinaro' in self.data_root:
+            return 'molinaro'  # Higher sampling rate, needs downsampling
         elif 'Canonical_MeMo' in self.data_root:
             return 'memo'     # Standard sampling rate
         else:
@@ -509,8 +513,6 @@ class LoadData(Dataset):
 
                     if hip_flexion_r_col:
                         label_buffer_R = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
-                        if self.dataset_type == 'camargo':
-                            label_buffer_R = -label_buffer_R
                     if hip_flexion_l_col:
                         label_buffer_L = label_df[hip_flexion_l_col[0]].values.reshape(-1, 1)
 
@@ -521,8 +523,6 @@ class LoadData(Dataset):
                             hip_l_col = [col for col in hip_moment_cols if 'l' in col.lower() or 'left' in col.lower()]
                             if hip_r_col:
                                 label_buffer_R = label_df[hip_r_col[0]].values.reshape(-1, 1)
-                                if self.dataset_type == 'camargo':
-                                    label_buffer_R = -label_buffer_R
                             if hip_l_col:
                                 label_buffer_L = label_df[hip_l_col[0]].values.reshape(-1, 1)
                         if label_buffer_R is None and label_buffer_L is None:
@@ -650,9 +650,9 @@ class LoadData(Dataset):
         print(f"Total {self.data_type} sequences: {self.length}")
 
     def _downsample_if_needed(self) -> None:
-        if self.dataset_type != 'camargo':
+        if self.dataset_type != 'camargo' and self.dataset_type != 'keaton' and self.dataset_type != 'molinaro':
             return
-        print("Applying downsampling (::2) for Camargo dataset...")
+        print("Applying downsampling (::2) for EPIC lab dataset...")
         original_input_size = self.input.shape[0]
         original_label_size = self.label.shape[0]
         self.input = self.input[::2]
