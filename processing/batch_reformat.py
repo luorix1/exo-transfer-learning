@@ -8,6 +8,7 @@ import sys
 import re
 
 import pandas as pd
+import numpy as np
 
 # Optional import of canonical conversion utilities
 CANON_AVAILABLE = False
@@ -20,7 +21,6 @@ try:
         simulate_gyro,
         fit_rotation,
     )
-    import numpy as np
     import opensim as osim  # noqa: F401
     CANON_AVAILABLE = True
 except Exception:
@@ -152,30 +152,45 @@ def standardize_segment_names(df: pd.DataFrame) -> pd.DataFrame:
         new_col = re.sub(r'\btrunk(?=_|\b)', 'pelvis', col_str, flags=re.IGNORECASE)
         col_lower = new_col.lower()
         
-        # Step 2: Handle bilateral data (segment_*_l, segment_*_r) -> (segment_l_*, segment_r_*)
-        # Pattern: segment_sensor_axis_side -> segment_side_sensor_axis
-        bilateral_pattern = r'\b(thigh|femur|shank|tibia|foot)_([^_]+)_([xyz])_(l|r|left|right)(?:_|$)'
-        match = re.search(bilateral_pattern, col_lower)
+        # Step 2: Handle Keaton-style naming (LShank_ACCX, LAThigh_ACCX, LPThigh_ACCX) -> (shank_l_accel_x, thigh_l_accel_x, thigh_l_accel_x)
+        keaton_pattern = r'\b(l|r)(athigh|pthigh|thigh|femur|shank|tibia|foot|pelvis)_(acc|gyro)([xyz])(?:_|$)'
+        match = re.search(keaton_pattern, col_lower)
         if match:
-            segment, sensor, axis, side = match.groups()
-            # Convert left/right to l/r
-            side_short = 'l' if side in ['l', 'left'] else 'r'
+            side, segment, sensor_type, axis = match.groups()
+            # Convert L/R to l/r
+            side_short = side.lower()
+            # Convert ACC/GYRO to accel/gyro
+            sensor_name = 'accel' if sensor_type.lower() == 'acc' else 'gyro'
+            # Handle compound segment names: athigh/pthigh -> thigh
+            if segment in ['athigh']: # Remove posterior IMU (most exosuits have anterior thigh IMU)
+                segment = 'thigh'
             # Reconstruct: segment_side_sensor_axis
-            new_col = re.sub(bilateral_pattern, rf'{segment}_{side_short}_{sensor}_{axis}', new_col, flags=re.IGNORECASE)
+            new_col = re.sub(keaton_pattern, rf'{segment}_{side_short}_{sensor_name}_{axis}', new_col, flags=re.IGNORECASE)
         else:
-            # Step 3: For unilateral data, add _r suffix to segment names without side indicators
-            # Check if column already has _l, _r, _left, or _right suffix after the segment name
-            pattern1 = r'\b(thigh|femur|shank|tibia|foot)_(l|r|left|right)_'
-            pattern2 = r'\b(thigh|femur|shank|tibia|foot)_[^_]+_(l|r|left|right)(?:_|$)'
-            has_side_suffix = bool(re.search(pattern1, col_lower) or re.search(pattern2, col_lower))
-            
-            if not has_side_suffix:
-                # Add _r suffix to common unilateral segments (assume right side)
-                for segment in ['thigh', 'femur', 'shank', 'tibia', 'foot']:
-                    pattern = rf'\b{segment}_(?!(l|r|left|right)_)'
-                    if re.search(pattern, col_lower):
-                        new_col = re.sub(pattern, f'{segment}_r_', new_col, flags=re.IGNORECASE)
-                        break
+            # Step 3: Handle bilateral data (segment_*_l, segment_*_r) -> (segment_l_*, segment_r_*)
+            # Pattern: segment_sensor_axis_side -> segment_side_sensor_axis
+            bilateral_pattern = r'\b(thigh|femur|shank|tibia|foot)_([^_]+)_([xyz])_(l|r|left|right)(?:_|$)'
+            match = re.search(bilateral_pattern, col_lower)
+            if match:
+                segment, sensor, axis, side = match.groups()
+                # Convert left/right to l/r
+                side_short = 'l' if side in ['l', 'left'] else 'r'
+                # Reconstruct: segment_side_sensor_axis
+                new_col = re.sub(bilateral_pattern, rf'{segment}_{side_short}_{sensor}_{axis}', new_col, flags=re.IGNORECASE)
+            else:
+                # Step 4: For unilateral data, add _r suffix to segment names without side indicators
+                # Check if column already has _l, _r, _left, or _right suffix after the segment name
+                pattern1 = r'\b(thigh|femur|shank|tibia|foot)_(l|r|left|right)_'
+                pattern2 = r'\b(thigh|femur|shank|tibia|foot)_[^_]+_(l|r|left|right)(?:_|$)'
+                has_side_suffix = bool(re.search(pattern1, col_lower) or re.search(pattern2, col_lower))
+                
+                if not has_side_suffix:
+                    # Add _r suffix to common unilateral segments (assume right side)
+                    for segment in ['thigh', 'femur', 'shank', 'tibia', 'foot']:
+                        pattern = rf'\b{segment}_(?!(l|r|left|right)_)'
+                        if re.search(pattern, col_lower):
+                            new_col = re.sub(pattern, f'{segment}_r_', new_col, flags=re.IGNORECASE)
+                            break
         
         new_columns.append(new_col)
     
@@ -450,11 +465,21 @@ def process_trial(trial: Dict[str, Path], output_root: Path, canonical: bool, un
             df_raw = read_csv_flexible(imu_csv)
             # Standardize segment names (trunk -> pelvis) for consistency
             df_raw = standardize_segment_names(df_raw)
+            # Apply unit conversion for gyro data if needed
+            if unit == "deg":
+                gyro_cols = [col for col in df_raw.columns if 'gyro' in col.lower()]
+                for col in gyro_cols:
+                    df_raw[col] = df_raw[col] * (np.pi / 180.0)
             write_csv_normalized(df_raw, imu_out)
     else:
         df_raw = read_csv_flexible(imu_csv)
         # Standardize segment names (trunk -> pelvis) for consistency
         df_raw = standardize_segment_names(df_raw)
+        # Apply unit conversion for gyro data if needed
+        if unit == "deg":
+            gyro_cols = [col for col in df_raw.columns if 'gyro' in col.lower()]
+            for col in gyro_cols:
+                df_raw[col] = df_raw[col] * (np.pi / 180.0)
         write_csv_normalized(df_raw, imu_out)
 
     # joint_moment.csv: choose CSV in condition-level id and normalize headers
