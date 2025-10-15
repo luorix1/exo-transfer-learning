@@ -167,6 +167,42 @@ Canonical/
 - **Label columns**: `hip_flexion_r_moment`, `knee_angle_r_moment`, etc.
 - All column names are lowercase with underscores
 
+## Visualization
+
+### Right hip flexion vs right thigh gyro
+
+Plot the right hip flexion moment against the three axes of the right thigh gyroscope, synchronized by the `time` column (rows with any NaN are dropped before plotting).
+
+Usage:
+
+```bash
+python scripts/plot_canonical_right_hip_vs_thigh.py \
+  --data_root "/path/to/Canonical" \
+  --subject AB06 \
+  --condition treadmill \
+  --trial treadmill_01_01
+```
+
+Examples:
+
+```bash
+# Canonical_Camargo example
+python scripts/plot_canonical_right_hip_vs_thigh.py \
+  --data_root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Canonical_Camargo" \
+  --subject AB06 \
+  --condition treadmill \
+  --trial treadmill_01_01
+
+# Canonical_Molinaro example
+python scripts/plot_canonical_right_hip_vs_thigh.py \
+  --data_root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Canonical_Molinaro" \
+  --subject AB21 \
+  --condition levelground \
+  --trial levelground_0.0_1.0_01
+```
+
+The script saves a PNG in the current directory named like `plot_rhip_vs_rthigh_<subject>_<condition>_<trial>.png`.
+
 ## Model Training
 
 ### Basic Training
