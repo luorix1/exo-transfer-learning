@@ -90,11 +90,50 @@ def to_snake_case(name: str) -> str:
     return s
 
 
+def standardize_joint_moment_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardize joint moment column names to canonical format.
+    
+    Transforms:
+    - hip_flexion_moment_l -> hip_flexion_l_moment
+    - hip_flexion_moment_r -> hip_flexion_r_moment
+    - knee_angle_moment_l -> knee_angle_l_moment
+    - knee_angle_moment_r -> knee_angle_r_moment
+    - ankle_angle_moment_l -> ankle_angle_l_moment
+    - ankle_angle_moment_r -> ankle_angle_r_moment
+    """
+    df = df.copy()
+    new_columns = []
+    
+    for col in df.columns:
+        col_str = str(col)
+        col_lower = col_str.lower()
+        
+        # Pattern: joint_motion_moment_side -> joint_motion_side_moment
+        moment_pattern = r'\b([^_]+)_([^_]+)_moment_(l|r|left|right)(?:_|$)'
+        match = re.search(moment_pattern, col_lower)
+        if match:
+            joint, motion, side = match.groups()
+            # Convert left/right to l/r
+            side_short = 'l' if side in ['l', 'left'] else 'r'
+            # Reconstruct: joint_motion_side_moment
+            new_col = re.sub(moment_pattern, rf'{joint}_{motion}_{side_short}_moment', col_str, flags=re.IGNORECASE)
+        else:
+            new_col = col_str
+        
+        new_columns.append(new_col)
+    
+    df.columns = new_columns
+    return df
+
+
 def standardize_segment_names(df: pd.DataFrame) -> pd.DataFrame:
     """Standardize segment names to canonical format.
     
     Transforms:
     - trunk -> pelvis
+    - For bilateral data (thigh_accel_x_l, thigh_accel_x_r):
+      - thigh_accel_x_l -> thigh_l_accel_x
+      - thigh_accel_x_r -> thigh_r_accel_x
     - For unilateral data (no _l/_r suffix):
       - thigh -> thigh_r
       - shank -> shank_r
@@ -110,27 +149,33 @@ def standardize_segment_names(df: pd.DataFrame) -> pd.DataFrame:
         col_lower = col_str.lower()
         
         # Step 1: Replace 'trunk' with 'pelvis' (case-insensitive)
-        # Match trunk as whole word or followed by underscore
         new_col = re.sub(r'\btrunk(?=_|\b)', 'pelvis', col_str, flags=re.IGNORECASE)
-        
-        # Step 2: For unilateral data, add _r suffix to segment names without side indicators
-        # Update col_lower after trunk replacement
         col_lower = new_col.lower()
-        # Check if column already has _l, _r, _left, or _right suffix after the segment name
-        has_side_suffix = bool(re.search(r'_(l|r|left|right)_', col_lower))
         
-        if not has_side_suffix:
-            # Add _r suffix to common unilateral segments (assume right side)
-            # Pattern: segment_ (followed by underscore but not _l, _r, _left, _right)
-            # Note: pelvis doesn't get _r since it's already bilateral/central
-            for segment in ['thigh', 'femur', 'shank', 'tibia', 'foot']:
-                # Match: segment followed by underscore (but not _l, _r, _left, _right)
-                # e.g., 'thigh_gyro' -> 'thigh_r_gyro'
-                pattern = rf'\b{segment}_(?!(l|r|left|right)_)'
-                if re.search(pattern, col_lower):
-                    # Replace with segment_r_
-                    new_col = re.sub(pattern, f'{segment}_r_', new_col, flags=re.IGNORECASE)
-                    break  # Only replace the first matching segment
+        # Step 2: Handle bilateral data (segment_*_l, segment_*_r) -> (segment_l_*, segment_r_*)
+        # Pattern: segment_sensor_axis_side -> segment_side_sensor_axis
+        bilateral_pattern = r'\b(thigh|femur|shank|tibia|foot)_([^_]+)_([xyz])_(l|r|left|right)(?:_|$)'
+        match = re.search(bilateral_pattern, col_lower)
+        if match:
+            segment, sensor, axis, side = match.groups()
+            # Convert left/right to l/r
+            side_short = 'l' if side in ['l', 'left'] else 'r'
+            # Reconstruct: segment_side_sensor_axis
+            new_col = re.sub(bilateral_pattern, rf'{segment}_{side_short}_{sensor}_{axis}', new_col, flags=re.IGNORECASE)
+        else:
+            # Step 3: For unilateral data, add _r suffix to segment names without side indicators
+            # Check if column already has _l, _r, _left, or _right suffix after the segment name
+            pattern1 = r'\b(thigh|femur|shank|tibia|foot)_(l|r|left|right)_'
+            pattern2 = r'\b(thigh|femur|shank|tibia|foot)_[^_]+_(l|r|left|right)(?:_|$)'
+            has_side_suffix = bool(re.search(pattern1, col_lower) or re.search(pattern2, col_lower))
+            
+            if not has_side_suffix:
+                # Add _r suffix to common unilateral segments (assume right side)
+                for segment in ['thigh', 'femur', 'shank', 'tibia', 'foot']:
+                    pattern = rf'\b{segment}_(?!(l|r|left|right)_)'
+                    if re.search(pattern, col_lower):
+                        new_col = re.sub(pattern, f'{segment}_r_', new_col, flags=re.IGNORECASE)
+                        break
         
         new_columns.append(new_col)
     
@@ -416,6 +461,8 @@ def process_trial(trial: Dict[str, Path], output_root: Path, canonical: bool, un
     out_label = label_dir / "joint_moment.csv"
     if id_csv is not None and id_csv.suffix.lower() == ".csv":
         df_label = read_csv_flexible(id_csv)
+        # Standardize joint moment column names
+        df_label = standardize_joint_moment_names(df_label)
         # Apply bodyweight normalization if requested
         if normalize_moment:
             subject_dir = cond_dir.parent.parent  # Go up to subject level
@@ -428,6 +475,8 @@ def process_trial(trial: Dict[str, Path], output_root: Path, canonical: bool, un
         picked = best_match_by_stem(trial_name, candidates) if candidates else None
         if picked is not None:
             df_label = read_csv_flexible(picked)
+            # Standardize joint moment column names
+            df_label = standardize_joint_moment_names(df_label)
             # Apply bodyweight normalization if requested
             if normalize_moment:
                 subject_dir = cond_dir.parent.parent  # Go up to subject level
