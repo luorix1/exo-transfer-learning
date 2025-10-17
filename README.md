@@ -118,7 +118,51 @@ canonical_z (right)   = -memo_y (flip left to right)
 3. Transforms gyroscope data from MeMo frame to OpenSim canonical frame
 4. Maintains the existing Subject/Condition/Trial/Input,Label structure
 
-### 3. Batch Dataset Reformatting
+### 3. Dataset Preprocessing
+
+Convert raw datasets to standardized format with gyro-only columns (without canonical frame conversion):
+
+#### Molinaro Dataset
+
+```bash
+python processing/preprocess_molinaro.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Samples/Molinaro" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Molinaro_Phase1_Phase2" \
+  --conditions levelground,ramp,stair \
+  --unit rad \
+  --max-frames 100000
+```
+
+#### Keaton Dataset
+
+```bash
+python processing/preprocess_keaton.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Keaton" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Keaton" \
+  --conditions levelground,ramp,stair \
+  --unit deg \
+  --max-frames 100000
+```
+
+#### Camargo Dataset
+
+```bash
+python processing/preprocess_camargo.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Samples/Camargo" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo" \
+  --conditions treadmill,levelground,ramp,stair,static \
+  --unit rad \
+  --max-frames 100000
+```
+
+**What preprocessing does:**
+1. Extracts only gyroscope columns from IMU data
+2. Standardizes column names to canonical format
+3. Converts units (deg → rad) if specified
+4. Renames `Header` → `time` columns for consistency
+5. Creates standardized output structure: `Subject/Condition/Trial/Input/imu_data.csv` and `Label/joint_moment.csv`
+
+### 4. Batch Dataset Reformatting
 
 Convert raw datasets (Camargo, Keaton, etc.) to the standardized Canonical format:
 
