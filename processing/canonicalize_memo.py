@@ -151,6 +151,111 @@ def extract_subject_id(subject_name: str) -> str:
     return subject_name.split('_')[0]
 
 
+def load_subject_weights(output_root: Path) -> dict:
+    """Load subject weights from SubjectInfo.csv"""
+    subject_info_path = output_root / "SubjectInfo.csv"
+    if not subject_info_path.exists():
+        print(f"⚠️  Warning: SubjectInfo.csv not found at {subject_info_path}")
+        return {}
+    
+    try:
+        df = pd.read_csv(subject_info_path)
+        columns_lower = {col.lower(): col for col in df.columns}
+        
+        # Find subject column
+        subject_col = None
+        for candidate in ['index', 'subject', 'id']:
+            if candidate in columns_lower:
+                subject_col = columns_lower[candidate]
+                break
+        
+        # Find weight column
+        weight_col = None
+        for candidate in ['weight', 'mass', 'body_mass']:
+            if candidate in columns_lower:
+                weight_col = columns_lower[candidate]
+                break
+        
+        if subject_col is None or weight_col is None:
+            print(f"⚠️  Could not find Subject/Weight columns in SubjectInfo.csv")
+            return {}
+        
+        weights = {}
+        for _, row in df.iterrows():
+            subject_id = str(row[subject_col]).strip()
+            weight = float(row[weight_col])
+            weights[subject_id] = weight
+        
+        print(f"✅ Loaded weights for {len(weights)} subjects")
+        return weights
+    except Exception as e:
+        print(f"⚠️  Error loading SubjectInfo.csv: {e}")
+        return {}
+
+
+def process_label_file(label_df: pd.DataFrame, subject_weight: Optional[float] = None) -> pd.DataFrame:
+    """
+    Process MetaMobility label file to standardized format.
+    
+    Raw format has columns like:
+        - LHipMoment_Y, RHipMoment_Y (hip flexion moments in N-mm/kg)
+        - LKneeMoment_Y, RKneeMoment_Y (knee flexion moments in N-mm/kg)
+        - LAnkleMoment_Y, RAnkleMoment_Y (ankle moments in N-mm/kg)
+    
+    Note: 
+    - MetaMobility moments are already normalized by body weight but in N-mm/kg.
+    - Y axis represents flexion in MeMo coordinate system
+    - Left leg has opposite sign convention (+ for extension), needs sign flip
+    - Right leg has correct sign (+ for flexion)
+    - We divide by 1000 to convert N-mm/kg to Nm/kg
+    
+    Standardized format:
+        - time, hip_flexion_l_moment, hip_flexion_r_moment, 
+          knee_angle_l_moment, knee_angle_r_moment,
+          ankle_angle_l_moment, ankle_angle_r_moment
+        All in Nm/kg with + for flexion
+    """
+    # Create time column from Frame (assuming 100 Hz)
+    if 'Frame' in label_df.columns:
+        label_df['time'] = label_df['Frame'] / 100.0
+    
+    # Extract and rename moment columns
+    moment_data = {'time': label_df['time']}
+    
+    # Map MetaMobility column names to standardized names
+    # Y axis is flexion, and left leg needs sign flip
+    column_mapping = {
+        'LHipMoment_Y': ('hip_flexion_l_moment', -1),    # Left: flip sign
+        'RHipMoment_Y': ('hip_flexion_r_moment', 1),     # Right: keep sign
+        'LKneeMoment_Y': ('knee_angle_l_moment', -1),    # Left: flip sign
+        'RKneeMoment_Y': ('knee_angle_r_moment', 1),     # Right: keep sign
+        'LAnkleMoment_Y': ('ankle_angle_l_moment', -1),  # Left: flip sign
+        'RAnkleMoment_Y': ('ankle_angle_r_moment', 1),   # Right: keep sign
+    }
+    
+    for raw_col, (std_col, sign) in column_mapping.items():
+        if raw_col in label_df.columns:
+            # Convert from N-mm/kg to Nm/kg and apply sign correction
+            moment_data[std_col] = sign * label_df[raw_col].values / 1000.0
+    
+    # Create standardized dataframe
+    std_df = pd.DataFrame(moment_data)
+    
+    print(f"    ✓ Converted {len([col for col in std_df.columns if 'moment' in col.lower()])} moment columns from N-mm/kg to Nm/kg")
+    print(f"    ✓ Applied sign correction for left leg moments")
+    
+    return std_df
+
+
+def convert_gyro_to_radians(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert gyro data from degrees/sec to radians/sec"""
+    df = df.copy()
+    gyro_cols = [col for col in df.columns if 'gyro' in col.lower() and col.lower() != 'time']
+    for col in gyro_cols:
+        df[col] = np.radians(df[col])
+    return df
+
+
 def canonicalize_imu_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     Canonicalize all IMU gyro data in the dataframe.
@@ -166,6 +271,10 @@ def canonicalize_imu_data(df: pd.DataFrame) -> pd.DataFrame:
     
     # Extract only gyro columns
     df = extract_gyro_columns(df)
+    
+    # Convert from degrees to radians
+    df = convert_gyro_to_radians(df)
+    print("    ✓ Converted gyro data from deg/s to rad/s")
     
     df_canonical = df.copy()
     
@@ -224,13 +333,23 @@ def process_trial(
         # Copy entire trial structure
         output_trial_dir.mkdir(parents=True, exist_ok=True)
         
-        # Copy Label directory (unchanged)
+        # Process Label directory
         label_src = input_trial_dir / "Label"
         if label_src.exists():
-            label_dst = output_trial_dir / "Label"
-            if label_dst.exists():
-                shutil.rmtree(label_dst)
-            shutil.copytree(label_src, label_dst)
+            # Find the label CSV file
+            label_files = list(label_src.glob("*.csv"))
+            if label_files:
+                # Read the raw label file
+                label_df = pd.read_csv(label_files[0])
+                
+                # Process and standardize (moments already in N-mm/kg, will convert to Nm/kg)
+                std_label_df = process_label_file(label_df)
+                
+                # Save as joint_moment.csv
+                label_dst = output_trial_dir / "Label"
+                label_dst.mkdir(exist_ok=True)
+                std_label_df.to_csv(label_dst / "joint_moment.csv", index=False)
+                print(f"    ✓ Processed label file: {label_files[0].name} → joint_moment.csv")
         
         # Copy opensim directory if it exists (unchanged)
         opensim_src = input_trial_dir / "opensim"
