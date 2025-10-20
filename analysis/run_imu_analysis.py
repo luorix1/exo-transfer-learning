@@ -35,7 +35,7 @@ def run_single_analysis(args):
         "--condition", args.condition,
         "--trial", args.trial,
         "--output", args.output,
-        "--segment", args.segment,
+        "--segments", args.segments,
         "--max-frames", str(args.max_frames)
     ]
     
@@ -63,7 +63,7 @@ def run_batch_analysis(args):
         str(Path(__file__).parent / "batch_imu_optimization.py"),
         "--dataset-root", args.dataset,
         "--output-root", args.output,
-        "--segment", args.segment,
+        "--segments", args.segments,
         "--max-frames", str(args.max_frames),
         "--max-trials-per-subject", str(args.max_trials_per_subject)
     ]
@@ -103,7 +103,7 @@ def main():
     single_parser.add_argument("--condition", required=True, help="Condition")
     single_parser.add_argument("--trial", required=True, help="Trial name")
     single_parser.add_argument("--output", required=True, help="Output directory")
-    single_parser.add_argument("--segment", default="femur_r", help="Body segment (default: femur_r)")
+    single_parser.add_argument("--segments", default="all", help="Comma-separated segments or 'all' (default: all)")
     single_parser.add_argument("--max-frames", type=int, default=2000, help="Max frames (default: 2000)")
     single_parser.add_argument("--gyro-in-degrees", action="store_true", help="Use degrees for gyro data")
     single_parser.add_argument("--debug", action="store_true", help="Enable debug mode with separate IMU plots")
@@ -114,7 +114,7 @@ def main():
     batch_parser.add_argument("--output", required=True, help="Output directory")
     batch_parser.add_argument("--subjects", help="Comma-separated subjects (default: all)")
     batch_parser.add_argument("--conditions", help="Comma-separated conditions (default: all)")
-    batch_parser.add_argument("--segment", default="femur_r", help="Body segment (default: femur_r)")
+    batch_parser.add_argument("--segments", default="all", help="Comma-separated segments or 'all' (default: all)")
     batch_parser.add_argument("--max-frames", type=int, default=2000, help="Max frames (default: 2000)")
     batch_parser.add_argument("--max-trials-per-subject", type=int, default=10, help="Max trials per subject (default: 10)")
     batch_parser.add_argument("--gyro-in-degrees", action="store_true", help="Use degrees for gyro data")

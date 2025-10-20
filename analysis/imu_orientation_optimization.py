@@ -781,14 +781,14 @@ def main():
     parser.add_argument("--trial", required=True, help="Trial name (e.g., LG_C0p0_S0p0_BT_1_10)")
     parser.add_argument("--output", required=True, help="Output directory for results")
     parser.add_argument(
-        "--segment",
+        "--segments",
         default="femur_r",
-        help="Body segment to attach IMU to (default: femur_r)",
+        help="Comma-separated list of body segments or 'all' (default: femur_r). Available: femur_r, femur_l, tibia_r, tibia_l, pelvis",
     )
     parser.add_argument(
         "--imu-name",
-        default="femur_r_imu",
-        help="Name for the IMU component (default: femur_r_imu)",
+        default=None,
+        help="Name for the IMU component (default: auto-generated from segment)",
     )
     parser.add_argument(
         "--max-frames",
@@ -808,6 +808,88 @@ def main():
     )
 
     args = parser.parse_args()
+    
+    # Define available segments and their corresponding IMU data names
+    segment_to_imu_data = {
+        "femur_r": "thigh_r",
+        "femur_l": "thigh_l",
+        "tibia_r": "shank_r",
+        "tibia_l": "shank_l",
+        "pelvis": "pelvis"
+    }
+    
+    # Parse segments
+    if args.segments.lower() == "all":
+        segments_to_process = list(segment_to_imu_data.keys())
+    else:
+        segments_to_process = [s.strip() for s in args.segments.split(",")]
+        # Validate segments
+        invalid_segments = [s for s in segments_to_process if s not in segment_to_imu_data]
+        if invalid_segments:
+            print(f"❌ Invalid segments: {invalid_segments}")
+            print(f"   Available segments: {list(segment_to_imu_data.keys())}")
+            return
+    
+    # Process each segment
+    all_results = {}
+    for segment in segments_to_process:
+        imu_data_name = segment_to_imu_data[segment]
+        imu_name = args.imu_name if args.imu_name else f"{segment}_imu"
+        
+        print(f"\n{'='*70}")
+        print(f"🎯 Processing segment: {segment} (IMU data: {imu_data_name})")
+        print(f"{'='*70}")
+        
+        # Create segment-specific output directory
+        if len(segments_to_process) > 1:
+            segment_output = Path(args.output) / segment
+        else:
+            segment_output = Path(args.output)
+        
+        args_copy = argparse.Namespace(**vars(args))
+        args_copy.segment = segment
+        args_copy.imu_name = imu_name
+        args_copy.output = str(segment_output)
+        args_copy.imu_data_name = imu_data_name
+        
+        result = process_single_segment(args_copy)
+        if result:
+            all_results[segment] = result
+    
+    # Save combined results if multiple segments
+    if len(segments_to_process) > 1 and all_results:
+        combined_output = Path(args.output) / "combined_results.json"
+        combined_data = {
+            "configuration": {
+                "dataset_root": args.dataset_root,
+                "subject": args.subject,
+                "condition": args.condition,
+                "trial": args.trial,
+                "segments": segments_to_process
+            },
+            "segments": {}
+        }
+        
+        for segment, result in all_results.items():
+            combined_data["segments"][segment] = {
+                "optimal_quaternion": result["optimal_quaternion"].tolist(),
+                "optimal_rotation_matrix": result["optimal_rotation_matrix"].tolist(),
+                "initial_cost": float(result["initial_cost"]),
+                "final_cost": float(result["final_cost"]),
+                "improvement_percent": float(result["improvement_percent"])
+            }
+        
+        with open(combined_output, "w") as f:
+            json.dump(combined_data, f, indent=2)
+        
+        print(f"\n{'='*70}")
+        print(f"✅ All segments processed successfully!")
+        print(f"📊 Combined results saved to: {combined_output}")
+        print(f"{'='*70}")
+
+
+def process_single_segment(args):
+    """Process optimization for a single segment"""
 
     # Create output directory
     Path(args.output).mkdir(exist_ok=True, parents=True)
@@ -829,7 +911,7 @@ def main():
         )
         
         if model_file is None:
-            return
+            return None
 
         print(f"Model: {model_file}")
         print(f"Motion: {motion_file}")
@@ -840,12 +922,15 @@ def main():
             str(model_file), str(motion_file), args.segment, args.imu_name, args.max_frames
         )
         if not success:
-            return
+            return None
 
-        # Step 2: Load real IMU data (gyro only)
-        _, real_gyro_signals, real_times, success = load_real_imu_data(str(real_imu_file))
+        # Step 2: Load real IMU data (gyro only) - use imu_data_name if provided
+        imu_data_segment = getattr(args, 'imu_data_name', args.segment)
+        _, real_gyro_signals, real_times, success = load_real_imu_data_for_segment(
+            str(real_imu_file), imu_data_segment
+        )
         if not success:
-            return
+            return None
 
         # If real data is in degrees, convert to radians
         if args.gyro_in_degrees:
@@ -861,13 +946,13 @@ def main():
         )
 
         if not success:
-            return
+            return None
 
         # Step 4: Optimize orientation
         optimization_result = optimize_orientation(sim_aligned, real_aligned)
         if not optimization_result["success"]:
             print("❌ Optimization failed to converge")
-            return
+            return None
 
         # Step 5: Create visualizations
         create_visualizations(
@@ -891,12 +976,72 @@ def main():
         print(f"   Final MSE: {optimization_result['final_cost']:.6f}")
         print(f"   Improvement: {optimization_result['improvement_percent']:.2f}%")
         print(f"   Results saved to: {args.output}")
+        
+        return optimization_result
 
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
-
         traceback.print_exc()
+        return None
+
+
+def load_real_imu_data_for_segment(real_imu_file, segment_name):
+    """Load real IMU data for a specific segment"""
+    print(f"\n🔄 Step 2: Loading real IMU data for segment: {segment_name}...")
+
+    try:
+        imu_df = pd.read_csv(real_imu_file)
+
+        # Build case-insensitive column name map
+        lower_to_actual = {c.lower(): c for c in imu_df.columns}
+
+        def get_cols(candidates):
+            # candidates is a list of expected column names (case-insensitive)
+            actual = []
+            for name in candidates:
+                key = name.lower()
+                if key in lower_to_actual:
+                    actual.append(lower_to_actual[key])
+                else:
+                    return None
+            return actual
+
+        # Extract gyroscope data for the specific segment
+        gyro_candidates = [
+            [f"{segment_name}_gyro_x", f"{segment_name}_gyro_y", f"{segment_name}_gyro_z"],
+            [f"{segment_name}_Gyro_X", f"{segment_name}_Gyro_Y", f"{segment_name}_Gyro_Z"],
+            [f"{segment_name.upper()}_GYROX", f"{segment_name.upper()}_GYROY", f"{segment_name.upper()}_GYROZ"],
+        ]
+        
+        gyro_cols_actual = None
+        for candidate_set in gyro_candidates:
+            gyro_cols_actual = get_cols(candidate_set)
+            if gyro_cols_actual is not None:
+                print(f"✓ Found gyro columns: {gyro_cols_actual}")
+                break
+        
+        if gyro_cols_actual is None:
+            print(f"❌ No gyro columns found for segment '{segment_name}' in {real_imu_file}")
+            print(f"   Available columns: {list(imu_df.columns)}")
+            return None, None, None, False
+        
+        real_gyro_signals = imu_df[gyro_cols_actual].values
+        
+        # Time/Header column (case-insensitive)
+        header_col = lower_to_actual.get('header', lower_to_actual.get('time', None))
+        real_times = imu_df[header_col].values if header_col else np.arange(len(real_gyro_signals))
+        
+        print(f"✓ Loaded real IMU data: {len(real_times)} frames")
+        print(f"   Time range: {real_times[0]:.3f}s to {real_times[-1]:.3f}s")
+        print(f"   Gyro range: {np.min(real_gyro_signals, axis=0)} to {np.max(real_gyro_signals, axis=0)} rad/s")
+
+        # Return None for acc_signals since we only use gyro
+        return None, real_gyro_signals, real_times, True
+
+    except Exception as e:
+        print(f"❌ Error loading real IMU data: {e}")
+        return None, None, None, False
 
 
 if __name__ == "__main__":

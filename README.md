@@ -53,7 +53,161 @@ conda env create -f environment.yml
 
 ## Data Processing
 
-### 1. Canonical Frame Conversion
+### 1. IMU Orientation Optimization & Canonical Dataset Creation
+
+This pipeline optimizes IMU sensor orientations and creates canonical datasets where IMU data is transformed to align with OpenSim's anatomical reference frames (x: forward, y: up, z: right for each body segment).
+
+#### Step 1: Run IMU Orientation Optimization
+
+Optimize the 3-DoF rotation matrices for each IMU sensor to align with OpenSim frames using the Kabsch algorithm (SVD-based):
+
+```bash
+# Single trial, all segments (default)
+python analysis/run_imu_analysis.py single \
+  --dataset "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Molinaro_Phase1_Phase2" \
+  --subject AB17 \
+  --condition levelground \
+  --trial LG_C0p0_S0p8_UC_1 \
+  --output results/molinaro_multisegment \
+  --max-frames 2000
+
+# Specific segments only
+python analysis/run_imu_analysis.py single \
+  --dataset "/path/to/Final/Dataset" \
+  --subject AB01 \
+  --condition levelground \
+  --trial trial_01 \
+  --output results/dataset_analysis \
+  --segments femur_r,femur_l,pelvis
+```
+
+**Available Segments:**
+- `femur_r` / `femur_l` → thigh IMU data (`thigh_r`, `thigh_l`)
+- `tibia_r` / `tibia_l` → shank IMU data (`shank_r`, `shank_l`)
+- `pelvis` → pelvis IMU data (`pelvis`)
+- Use `--segments all` to process all available segments
+
+**What it does:**
+1. Loads OpenSim model and motion data (`.sto` files)
+2. Generates simulated IMU signals from OpenSim kinematics
+3. Loads real IMU gyroscope data for each segment
+4. Finds optimal rotation matrix using Kabsch algorithm (SVD)
+5. Creates visualizations (axes, comparison, summary plots)
+6. Saves individual results per segment + combined `combined_results.json`
+
+**Output Structure:**
+```
+results/molinaro_multisegment/
+├── combined_results.json          # All segments in one file
+├── femur_r/
+│   ├── optimization_results.json
+│   ├── optimization_axes.png
+│   ├── optimization_comparison.png
+│   └── optimization_summary.png
+├── femur_l/
+│   └── ...
+└── pelvis/
+    └── ...
+```
+
+**Options:**
+- `--segments`: Comma-separated segments or `all` (default: `all`)
+- `--max-frames`: Maximum frames to process (default: 2000)
+- `--gyro-in-degrees`: If real IMU data is in degrees (default: radians)
+- `--debug`: Enable debug plots showing real vs simulated data separately
+
+#### Step 2: Create Canonical Dataset
+
+Transform the entire dataset using the optimized rotation matrices:
+
+```bash
+# Create canonical dataset for Molinaro
+python processing/transform_imu_to_opensim_frame.py \
+  --dataset-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Molinaro_Phase1_Phase2" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Canonical_Molinaro" \
+  --results-file "results/molinaro_multisegment/combined_results.json"
+
+# Or use results directory (will find combined_results.json automatically)
+python processing/transform_imu_to_opensim_frame.py \
+  --dataset-root "/path/to/Final/Dataset" \
+  --output-root "/path/to/Canonical_Dataset" \
+  --results-dir "results/dataset_analysis/"
+```
+
+**What it does:**
+1. Loads rotation matrices from optimization results
+2. Copies entire dataset structure (OpenSim models, motion files, labels)
+3. Transforms IMU gyro data for all segments using their rotation matrices
+4. Saves transformed data to new canonical dataset
+
+**Options:**
+- `--results-file`: Path to `combined_results.json` or single `optimization_results.json`
+- `--results-dir`: Directory containing results (will auto-find `combined_results.json`)
+- `--subjects`: Comma-separated subjects to process (default: all)
+- `--conditions`: Comma-separated conditions to process (default: all)
+- `--max-trials`: Maximum trials per condition (default: all)
+- `--dry-run`: Preview changes without modifying files
+
+**Output Dataset Structure:**
+```
+Canonical_Dataset/
+├── Subject1/
+│   ├── opensim/
+│   │   └── Subject1.osim
+│   ├── levelground/
+│   │   ├── trial_01/
+│   │   │   ├── Input/
+│   │   │   │   └── imu_data.csv        # Transformed gyro data
+│   │   │   ├── Label/
+│   │   │   │   └── joint_moment.csv    # Original labels
+│   │   │   └── opensim/
+│   │   │       └── motion.sto          # Original motion file
+│   │   └── trial_02/
+│   │       └── ...
+│   └── treadmill/
+│       └── ...
+└── Subject2/
+    └── ...
+```
+
+**Complete Workflow Example:**
+
+```bash
+# 1. Preprocess raw dataset
+python processing/preprocess_molinaro.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Molinaro" \
+  --output-root "/path/to/Final/Molinaro" \
+  --conditions levelground,ramp,stair
+
+# 2. Generate OpenSim motion files (.sto)
+python processing/generate_sto_files_molinaro.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Molinaro" \
+  --output-root "/path/to/Final/Molinaro"
+
+# 3. Optimize IMU orientations (select representative trial)
+python analysis/run_imu_analysis.py single \
+  --dataset "/path/to/Final/Molinaro" \
+  --subject AB17 \
+  --condition levelground \
+  --trial LG_C0p0_S0p8_UC_1 \
+  --output results/molinaro_analysis
+
+# 4. Create canonical dataset
+python processing/transform_imu_to_opensim_frame.py \
+  --dataset-root "/path/to/Final/Molinaro" \
+  --output-root "/path/to/Canonical_Molinaro" \
+  --results-dir "results/molinaro_analysis/"
+
+# 5. Ready for training!
+python src/train.py \
+  --data_root "/path/to/Canonical_Molinaro" \
+  --train_subjects AB17 AB18 \
+  --test_subjects AB19
+```
+
+### 2. Legacy Canonical Frame Conversion
+
+Alternative single-trial canonical frame conversion (use IMU optimization pipeline above for full datasets):
 
 Convert real IMU angular velocity data to OpenSim canonical (segment-aligned) frames:
 
@@ -80,7 +234,7 @@ python processing/canonical_frame_converter.py \
 - `--unilateral`: Assume all IMU columns are right side
 - `--unit`: Unit of real IMU gyro (rad/deg, default: rad)
 
-### 2. MeMo Dataset Processing
+### 3. MeMo Dataset Processing
 
 Process MeMo_processed dataset with coordinate frame transformation:
 
@@ -118,7 +272,7 @@ canonical_z (right)   = -memo_y (flip left to right)
 3. Transforms gyroscope data from MeMo frame to OpenSim canonical frame
 4. Maintains the existing Subject/Condition/Trial/Input,Label structure
 
-### 3. Dataset Preprocessing
+### 4. Dataset Preprocessing
 
 Convert raw datasets to standardized format with gyro-only columns (without canonical frame conversion):
 
@@ -162,7 +316,7 @@ python processing/preprocess_camargo.py \
 4. Renames `Header` → `time` columns for consistency
 5. Creates standardized output structure: `Subject/Condition/Trial/Input/imu_data.csv` and `Label/joint_moment.csv`
 
-### 4. Batch Dataset Reformatting
+### 5. Batch Dataset Reformatting
 
 Convert raw datasets (Camargo, Keaton, etc.) to the standardized Canonical format:
 
