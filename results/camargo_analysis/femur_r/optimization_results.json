@@ -1,0 +1,39 @@
+{
+  "configuration": {
+    "model_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo/AB06/opensim/AB06.osim",
+    "motion_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo/AB06/treadmill/treadmill_03_01/opensim/motion.sto",
+    "real_imu_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo/AB06/treadmill/treadmill_03_01/Input/imu_data.csv",
+    "segment_name": "femur_r",
+    "imu_name": "femur_r_imu"
+  },
+  "optimization": {
+    "optimal_quaternion": [
+      0.06319069925097366,
+      -0.12126147310481206,
+      0.9905847407201296,
+      0.006667992280886401
+    ],
+    "optimal_rotation_matrix": [
+      [
+        -0.9626051813372485,
+        -0.24108223997940137,
+        0.12357434373363532
+      ],
+      [
+        -0.23939681960008352,
+        0.9705023860387865,
+        0.028535617364764065
+      ],
+      [
+        -0.12680862600016238,
+        -0.002114771746021339,
+        -0.9919249468142307
+      ]
+    ],
+    "initial_cost": 0.6193218940678484,
+    "final_cost": 0.3361481410147011,
+    "improvement_percent": 45.72319431389663,
+    "success": true,
+    "iterations": 1
+  }
+}
