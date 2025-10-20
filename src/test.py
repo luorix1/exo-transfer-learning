@@ -53,11 +53,15 @@ def load_normalization_params(save_dir: str):
 
 
 def detect_dataset_type(data_root: str) -> str:
-    """Detect dataset type based on data_root path to determine sampling rate and sign conventions."""
+    """Detect dataset type based on data_root path to determine sampling rate."""
     if 'Canonical_Camargo' in data_root:
-        return 'camargo'  # Higher sampling rate, needs downsampling, different sign convention
-    elif 'Canonical_MeMo' in data_root:
-        return 'memo'     # Standard sampling rate, standard sign convention
+        return 'camargo'  # Higher sampling rate, needs downsampling
+    elif 'Canonical_Keaton' in data_root:
+        return 'keaton'  # Higher sampling rate, needs downsampling
+    elif 'Canonical_Molinaro' in data_root:
+        return 'molinaro'  # Higher sampling rate, needs downsampling
+    elif 'Canonical_MeMo' in data_root or 'Canonical_Memo' in data_root:
+        return 'memo'     # Standard sampling rate
     else:
         return 'unknown'  # Default to no special handling
 
@@ -94,7 +98,16 @@ def predict_on_trial(
     normalize: bool = True,
     dataset_type: str = 'unknown',
 ):
-    """Make predictions on a single trial."""
+    """
+    Make predictions on a single trial.
+    
+    Note: This function manually loads and processes trial data for visualization purposes.
+    It replicates the same preprocessing pipeline as the DataHandler/LoadData classes:
+    - Extracts gyro data based on imu_segments configuration
+    - Normalizes using training statistics (if normalize=True)
+    - Applies low-pass filtering to labels (matching label_filter_hz from training)
+    - Creates sliding windows for prediction
+    """
     # Load IMU data
     imu_path = os.path.join(trial_path, "Input", "imu_data.csv")
     label_path = os.path.join(trial_path, "Label", "joint_moment.csv")
@@ -209,9 +222,6 @@ def predict_on_trial(
     true_labels = []
     if hip_flexion_r_col:
         true_data = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
-        # FIXME: Flip right hip flexion moment sign for Camargo dataset
-        if dataset_type == 'camargo':
-            true_data = -true_data
         # Apply the same low-pass filter as used in training
         true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
         # Get labels corresponding to the last time point of each window
@@ -237,9 +247,6 @@ def predict_on_trial(
 
             if hip_r_col:
                 true_data = label_df[hip_r_col[0]].values.reshape(-1, 1)
-                # FIXME: Flip right hip flexion moment sign for Camargo dataset
-                if dataset_type == 'camargo':
-                    true_data = -true_data
                 # Apply the same low-pass filter as used in training
                 true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
                 for i in range(num_windows):
@@ -285,9 +292,21 @@ def evaluate_model(
     normalize: bool = True,
     args=None,
 ):
-    """Evaluate model on test subjects."""
+    """
+    Evaluate model on test subjects.
+    
+    This function uses trial-by-trial evaluation to enable detailed visualization
+    and per-trial analysis. It replicates the DataHandler preprocessing pipeline
+    to ensure consistency with training:
+    - Uses the same normalization statistics
+    - Applies the same label filtering
+    - Extracts the same IMU segments
+    
+    Dataset type detection is used only for informational purposes and potential
+    future dataset-specific handling (e.g., downsampling for high-rate datasets).
+    """
 
-    # Detect dataset type for proper handling
+    # Detect dataset type for informational purposes
     dataset_type = detect_dataset_type(data_root)
     print(f"Detected dataset type: {dataset_type}")
 
