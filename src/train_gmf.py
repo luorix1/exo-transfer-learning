@@ -5,8 +5,6 @@ import argparse
 import json
 import os
 from datetime import datetime
-import numpy as np
-
 import torch
 import numpy as np
 from torch.optim import Adam
@@ -88,8 +86,6 @@ def main():
 
     os.makedirs(args.save_dir, exist_ok=True)
     config_path = os.path.join(args.save_dir, 'config.json')
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=2)
 
     if args.wandb_name is None:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -145,6 +141,10 @@ def main():
         param_size=param_size,
     ).to(device)
 
+    config['param_size'] = param_size
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+
     # Two optimizers: GE (generator+estimator) and GD (generator+decoder)
     params_ge = list(model.generator.parameters()) + list(model.estimator.parameters())
     params_gd = list(model.generator.parameters()) + list(model.decoder.parameters())
@@ -172,6 +172,10 @@ def main():
     trainer.fit(train_loader, val_loader)
     best_epoch = trainer.load_best_model()
     if best_epoch is not None:
+        best_checkpoint_name = f"gmf_model_epoch_{best_epoch}.pt"
+        config['best_checkpoint'] = best_checkpoint_name
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
         print(f"Loaded best checkpoint from epoch {best_epoch}")
 
     data_handler.save_mean_std(args.save_dir)
