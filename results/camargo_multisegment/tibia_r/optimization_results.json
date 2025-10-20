@@ -1,0 +1,39 @@
+{
+  "configuration": {
+    "model_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo/AB21/opensim/AB21.osim",
+    "motion_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo/AB21/treadmill/treadmill_03_01/opensim/motion.sto",
+    "real_imu_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo/AB21/treadmill/treadmill_03_01/Input/imu_data.csv",
+    "segment_name": "tibia_r",
+    "imu_name": "tibia_r_imu"
+  },
+  "optimization": {
+    "optimal_quaternion": [
+      0.531022352436441,
+      0.3592805683622327,
+      -0.5789643538374797,
+      0.503719179102532
+    ],
+    "optimal_rotation_matrix": [
+      [
+        -0.17786546882035864,
+        -0.9509935711251641,
+        -0.25293300037741473
+      ],
+      [
+        0.11895100269235405,
+        0.23436892360316436,
+        -0.9648429232821154
+      ],
+      [
+        0.9768390522290751,
+        -0.201698872896458,
+        0.07143550036572124
+      ]
+    ],
+    "initial_cost": 1.5625938561662935,
+    "final_cost": 0.2661033616911694,
+    "improvement_percent": 82.97040778439805,
+    "success": true,
+    "iterations": 1
+  }
+}

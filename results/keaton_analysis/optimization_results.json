@@ -1,0 +1,39 @@
+{
+  "configuration": {
+    "model_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Keaton/AB08/opensim/AB08.osim",
+    "motion_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Keaton/AB08/levelground/normal_walk_1_2-0/opensim/motion.sto",
+    "real_imu_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Keaton/AB08/levelground/normal_walk_1_2-0/Input/imu_data.csv",
+    "segment_name": "femur_r",
+    "imu_name": "femur_r_imu"
+  },
+  "optimization": {
+    "optimal_quaternion": [
+      0.8447086442831715,
+      0.2800023248542246,
+      0.42614680644545827,
+      0.16268037283536332
+    ],
+    "optimal_rotation_matrix": [
+      [
+        0.5838679913009682,
+        -0.036190841310618116,
+        0.8110415474803998
+      ],
+      [
+        0.5134792274463444,
+        0.790267588740753,
+        -0.33438932573720326
+      ],
+      [
+        -0.6288380170721848,
+        0.6116922111577897,
+        0.47999519486513254
+      ]
+    ],
+    "initial_cost": 1.6093587076389746,
+    "final_cost": 1.5846326339287007,
+    "improvement_percent": 1.5363929491237251,
+    "success": true,
+    "iterations": 1
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "configuration": {
+    "model_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo/AB21/opensim/AB21.osim",
+    "motion_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo/AB21/treadmill/treadmill_03_01/opensim/motion.sto",
+    "real_imu_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo/AB21/treadmill/treadmill_03_01/Input/imu_data.csv",
+    "segment_name": "pelvis",
+    "imu_name": "pelvis_imu"
+  },
+  "optimization": {
+    "optimal_quaternion": [
+      0.6618876366365254,
+      0.4995921259380996,
+      -0.3596844909099468,
+      0.4277143102202892
+    ],
+    "optimal_rotation_matrix": [
+      [
+        0.3753750716632702,
+        -0.9255887068559846,
+        -0.04877603217218884
+      ],
+      [
+        0.20680654893333092,
+        0.13493635306686477,
+        -0.9690321108917397
+      ],
+      [
+        0.9035068383205972,
+        0.35366329518580475,
+        0.2420695493990051
+      ]
+    ],
+    "initial_cost": 0.12406116561580863,
+    "final_cost": 0.07988478621213727,
+    "improvement_percent": 35.608547754964945,
+    "success": true,
+    "iterations": 1
+  }
+}

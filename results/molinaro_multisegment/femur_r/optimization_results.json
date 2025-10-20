@@ -1,0 +1,39 @@
+{
+  "configuration": {
+    "model_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Molinaro_Phase1_Phase2/AB21/opensim/AB21.osim",
+    "motion_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Molinaro_Phase1_Phase2/AB21/levelground/LG_C0p0_S1p5_UC_1/opensim/motion.sto",
+    "real_imu_file": "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Molinaro_Phase1_Phase2/AB21/levelground/LG_C0p0_S1p5_UC_1/Input/imu_data.csv",
+    "segment_name": "femur_r",
+    "imu_name": "femur_r_imu"
+  },
+  "optimization": {
+    "optimal_quaternion": [
+      -0.4989087420090315,
+      -0.5010888814840793,
+      0.5391371059655484,
+      -0.4575272461516287
+    ],
+    "optimal_rotation_matrix": [
+      [
+        0.0,
+        -0.9968399044144115,
+        -0.07943679857010214
+      ],
+      [
+        -0.08378253316494924,
+        0.07915750376388273,
+        -0.9933350777730218
+      ],
+      [
+        0.9964840626605446,
+        0.006655416210716974,
+        -0.08351777235174526
+      ]
+    ],
+    "initial_cost": 5.582783191440251,
+    "final_cost": 1.0074087231295727,
+    "improvement_percent": 81.95508067241134,
+    "success": true,
+    "iterations": 1
+  }
+}
