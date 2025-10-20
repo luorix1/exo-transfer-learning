@@ -94,8 +94,18 @@ def extract_gyro_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df[selected_cols]
 
 
-def process_trial(imu_file: Path, id_file: Path, output_dir: Path, unit: str, max_frames: int) -> bool:
-    """Process a single trial and save standardized data."""
+def process_trial(imu_file: Path, id_file: Path, output_dir: Path, unit: str, max_frames: int, 
+                 subject_weight: Optional[float] = None) -> bool:
+    """Process a single trial and save standardized data.
+    
+    Args:
+        imu_file: Path to IMU CSV file
+        id_file: Path to ID (joint moment) CSV file
+        output_dir: Output directory for processed data
+        unit: Unit of gyro data ('rad' or 'deg')
+        max_frames: Maximum number of frames to process
+        subject_weight: Subject body weight in kg (for normalizing moments)
+    """
     try:
         # Read IMU data
         imu_df = read_csv_flexible(imu_file)
@@ -151,6 +161,13 @@ def process_trial(imu_file: Path, id_file: Path, output_dir: Path, unit: str, ma
         # Standardize joint moment column names
         id_df = standardize_joint_moment_names(id_df)
         
+        # Normalize joint moments by body weight if provided
+        if subject_weight is not None and subject_weight > 0:
+            moment_cols = [col for col in id_df.columns if 'moment' in col.lower()]
+            for col in moment_cols:
+                id_df[col] = id_df[col] / subject_weight
+            print(f"    Normalized {len(moment_cols)} moment columns by weight: {subject_weight:.2f} kg")
+        
         # Create output directories
         input_dir = output_dir / "Input"
         label_dir = output_dir / "Label"
@@ -170,6 +187,59 @@ def process_trial(imu_file: Path, id_file: Path, output_dir: Path, unit: str, ma
     except Exception as e:
         print(f"  Error processing {imu_file}: {e}")
         return False
+
+
+def load_subject_info(dataset_root: Path) -> Dict[str, float]:
+    """Load SubjectInfo.csv and return a dict mapping subject ID to body weight.
+    
+    Args:
+        dataset_root: Path to dataset root (should contain SubjectInfo.csv)
+    
+    Returns:
+        Dict mapping subject ID (e.g., 'AB21') to body weight in kg
+    """
+    subject_info_path = dataset_root / "SubjectInfo.csv"
+    if not subject_info_path.exists():
+        print(f"⚠️  Warning: SubjectInfo.csv not found at {subject_info_path}")
+        print("   Joint moments will NOT be normalized by body weight!")
+        return {}
+    
+    try:
+        df = pd.read_csv(subject_info_path)
+        
+        # Find subject and weight columns (case-insensitive)
+        columns_lower = {col.lower(): col for col in df.columns}
+        
+        subject_col = None
+        for candidate in ['subject', 'id', 'participant']:
+            if candidate in columns_lower:
+                subject_col = columns_lower[candidate]
+                break
+        
+        weight_col = None
+        for candidate in ['weight', 'mass', 'body_mass', 'bodyweight']:
+            if candidate in columns_lower:
+                weight_col = columns_lower[candidate]
+                break
+        
+        if subject_col is None or weight_col is None:
+            print(f"⚠️  Warning: Could not find Subject or Weight columns in {subject_info_path}")
+            print(f"   Available columns: {list(df.columns)}")
+            return {}
+        
+        # Create mapping
+        subject_weights = {}
+        for _, row in df.iterrows():
+            subject_id = str(row[subject_col]).strip()
+            weight = float(row[weight_col])
+            subject_weights[subject_id] = weight
+        
+        print(f"✅ Loaded subject info for {len(subject_weights)} subjects")
+        return subject_weights
+        
+    except Exception as e:
+        print(f"⚠️  Error loading SubjectInfo.csv: {e}")
+        return {}
 
 
 def standardize_joint_moment_names(df: pd.DataFrame) -> pd.DataFrame:
@@ -196,6 +266,9 @@ def process_camargo_dataset(input_root: str, output_root: str, conditions: List[
     if not input_path.exists():
         raise ValueError(f"Input directory does not exist: {input_root}")
     
+    # Load subject information (body weights)
+    subject_weights = load_subject_info(output_path)
+    
     # Create output directory
     output_path.mkdir(parents=True, exist_ok=True)
     
@@ -208,7 +281,12 @@ def process_camargo_dataset(input_root: str, output_root: str, conditions: List[
             continue
             
         subject_name = subject_dir.name
-        print(f"Processing subject: {subject_name}")
+        subject_weight = subject_weights.get(subject_name, None)
+        
+        if subject_weight is None:
+            print(f"⚠️  Processing subject: {subject_name} (no weight info - moments will not be normalized)")
+        else:
+            print(f"Processing subject: {subject_name} (weight: {subject_weight:.2f} kg)")
         
         # Create subject directory in output
         subject_out = output_path / subject_name
@@ -259,7 +337,7 @@ def process_camargo_dataset(input_root: str, output_root: str, conditions: List[
                     trial_out.mkdir(exist_ok=True)
                     
                     total_trials += 1
-                    if process_trial(imu_file, id_file, trial_out, unit, max_frames):
+                    if process_trial(imu_file, id_file, trial_out, unit, max_frames, subject_weight):
                         processed_count += 1
     
     print(f"\nCompleted! Processed {processed_count}/{total_trials} trials successfully.")
