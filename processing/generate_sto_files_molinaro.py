@@ -37,6 +37,14 @@ def read_csv_flexible(file_path: Path) -> Optional[pd.DataFrame]:
             return None
 
 
+def filter_valid_data_regions(ik_df: pd.DataFrame, id_df: pd.DataFrame) -> tuple:
+    """Filter out time regions with too many NaN values"""
+    # Don't filter the data - just return it as-is
+    # The NaN handling will be done in the coordinate processing
+    print(f"    Using all {len(ik_df)} frames (NaN handling will be done per coordinate)")
+    return ik_df.copy(), id_df.copy()
+
+
 def create_motion_sto_file(ik_df: pd.DataFrame, id_df: pd.DataFrame, output_path: Path) -> bool:
     """Create a single motion.sto file combining IK and ID data in OpenSim format."""
     try:
@@ -50,6 +58,12 @@ def create_motion_sto_file(ik_df: pd.DataFrame, id_df: pd.DataFrame, output_path
 
         if len(ik_df) != len(id_df):
             print(f"    Warning: IK and ID lengths differ: {len(ik_df)} vs {len(id_df)}")
+            return False
+        
+        # Filter out invalid data regions
+        ik_df, id_df = filter_valid_data_regions(ik_df, id_df)
+        if ik_df is None or id_df is None:
+            print(f"    Error: No valid data regions found")
             return False
 
         # Define the complete set of OpenSim coordinates in the correct order
@@ -80,8 +94,22 @@ def create_motion_sto_file(ik_df: pd.DataFrame, id_df: pd.DataFrame, output_path
         # Add available coordinates from Molinaro data
         for molinaro_col, opensim_col in coord_mapping.items():
             if molinaro_col in ik_df.columns:
-                # Handle NaN values by filling with 0
-                values = ik_df[molinaro_col].fillna(0.0)
+                # Handle NaN values more intelligently
+                values = ik_df[molinaro_col].copy()
+                
+                # Check for NaN values
+                nan_count = values.isna().sum()
+                if nan_count > 0:
+                    print(f"    Info: {molinaro_col} has {nan_count} NaN values out of {len(values)} ({nan_count/len(values)*100:.1f}%)")
+                    
+                    # Try forward fill first, then backward fill
+                    values = values.ffill().bfill()
+                    
+                    # If still NaN (all values were NaN), use 0
+                    if values.isna().any():
+                        values = values.fillna(0.0)
+                        print(f"    Filled remaining NaN values with 0.0")
+                
                 complete_df[opensim_col] = values
             else:
                 complete_df[opensim_col] = 0.0  # Default value for missing coordinates
@@ -119,14 +147,39 @@ def create_motion_sto_file(ik_df: pd.DataFrame, id_df: pd.DataFrame, output_path
         # Reorder columns to match required order
         complete_df = complete_df[['time'] + required_coords]
         
+        # Validate data quality
+        nan_coords = []
+        for coord in required_coords:
+            if complete_df[coord].isna().any():
+                nan_coords.append(coord)
+        
+        if nan_coords:
+            print(f"    Warning: Coordinates with NaN values: {nan_coords}")
+            # Fill any remaining NaN values with 0
+            for coord in nan_coords:
+                complete_df[coord] = complete_df[coord].fillna(0.0)
+        
+        # Check if we have any meaningful data (not all zeros)
+        meaningful_coords = []
+        for coord in required_coords:
+            if not complete_df[coord].isna().all() and complete_df[coord].std() > 1e-6:
+                meaningful_coords.append(coord)
+        
+        if len(meaningful_coords) < 3:  # Need at least 3 meaningful coordinates
+            print(f"    Warning: Only {len(meaningful_coords)} coordinates have meaningful data")
+            print(f"    Meaningful coordinates: {meaningful_coords}")
+            # Don't create the file if data quality is too poor
+            return False
+        else:
+            print(f"    Found {len(meaningful_coords)} meaningful coordinates: {meaningful_coords[:5]}...")
+        
         # Precompute positions (radians for rotations; meters for translations)
+        # NOTE: Molinaro raw data is already in radians, so no conversion needed
         translational_coords = {"pelvis_tx", "pelvis_ty", "pelvis_tz"}
         df_pos = complete_df.copy()
         for col in required_coords:
-            if col not in translational_coords:
-                df_pos[col] = np.radians(df_pos[col].astype(float))
-            else:
-                df_pos[col] = df_pos[col].astype(float)
+            # No conversion needed - Molinaro data is already in radians
+            df_pos[col] = df_pos[col].astype(float)
 
         # Precompute speeds via central differences with unwrap for rotations
         t = complete_df["time"].astype(float).values
