@@ -29,7 +29,7 @@ class GMFGenerator(nn.Module):
             params = params.unsqueeze(0)
         if moments.dim() == 1:
             moments = moments.unsqueeze(0)
-        x = torch.cat([moments, params], dim=-1)
+        x = torch.cat([params, moments], dim=-1)
         return self.network(x)
 
 
@@ -80,7 +80,7 @@ class GMFDecoder(nn.Module):
             params = params.unsqueeze(0)
         if gmf.dim() == 1:
             gmf = gmf.unsqueeze(0)
-        x = torch.cat([gmf, params], dim=-1)
+        x = torch.cat([params, gmf], dim=-1)
         return self.network(x)
 
 
