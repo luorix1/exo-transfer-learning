@@ -624,9 +624,9 @@ class LoadData(Dataset):
             num_sensors = num_channels // 3
             for sensor_idx in range(num_sensors):
                 sl = slice(3 * sensor_idx, 3 * sensor_idx + 3)
-                gx = np.deg2rad(np.random.uniform(-10, 10))
-                gy = np.deg2rad(np.random.uniform(-10, 10))
-                gz = np.deg2rad(np.random.uniform(-10, 10))
+                gx = np.deg2rad(np.random.uniform(-2, 2))
+                gy = np.deg2rad(np.random.uniform(-2, 2))
+                gz = np.deg2rad(np.random.uniform(-2, 2))
                 Rx = np.array([[1, 0, 0], [0, np.cos(gx), -np.sin(gx)], [0, np.sin(gx), np.cos(gx)]])
                 Ry = np.array([[np.cos(gy), 0, np.sin(gy)], [0, 1, 0], [-np.sin(gy), 0, np.cos(gy)]])
                 Rz = np.array([[np.cos(gz), -np.sin(gz), 0], [np.sin(gz), np.cos(gz), 0], [0, 0, 1]])
