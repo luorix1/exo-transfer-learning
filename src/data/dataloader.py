@@ -651,6 +651,8 @@ class LoadData(Dataset):
 
     def _downsample_if_needed(self) -> None:
         if self.dataset_type != 'camargo' and self.dataset_type != 'keaton' and self.dataset_type != 'molinaro':
+            #FIXME: Flip label sign for memo dataset
+            self.label = -self.label
             return
         print("Applying downsampling (::2) for EPIC lab dataset...")
         original_input_size = self.input.shape[0]
