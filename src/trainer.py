@@ -129,12 +129,20 @@ class Trainer:
             
             loss.backward()
             
-            # Clip gradients to prevent explosion
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            # Check gradient norm before clipping
+            total_norm = 0
+            for p in self.model.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** (1. / 2)
             
             # Check if gradients are too large (sign of instability)
-            if grad_norm > 10.0:
-                print(f"\n⚠️ WARNING: Large gradient norm {grad_norm:.2f} at batch {i}")
+            if total_norm > 1.0:
+                print(f"\n⚠️ WARNING: Large gradient norm {total_norm:.2f} at batch {i} (will be clipped to 1.0)")
+            
+            # Clip gradients to prevent explosion
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             
             self.optimizer.step()
             tloss += loss.item()
