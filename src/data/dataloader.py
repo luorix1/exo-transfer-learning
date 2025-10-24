@@ -70,13 +70,16 @@ class DataHandler:
     
     def _detect_dataset_type(self) -> str:
         """Detect dataset type based on data_root path to determine sampling rate."""
-        if 'Canonical_Camargo' in self.data_root:
+        # Convert to string to handle both string and Path objects
+        data_root_str = str(self.data_root)
+        
+        if 'Canonical_Camargo' in data_root_str:
             return 'camargo'  # Higher sampling rate, needs downsampling
-        elif 'Canonical_Keaton' in self.data_root:
+        elif 'Canonical_Keaton' in data_root_str:
             return 'keaton'  # Higher sampling rate, needs downsampling
-        elif 'Canonical_Molinaro' in self.data_root:
+        elif 'Canonical_Molinaro' in data_root_str:
             return 'molinaro'  # Higher sampling rate, needs downsampling
-        elif 'Canonical_MeMo' in self.data_root:
+        elif 'Canonical_MeMo' in data_root_str:
             return 'memo'     # Standard sampling rate
         else:
             return 'unknown'  # Default to no downsampling
