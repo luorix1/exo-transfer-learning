@@ -3,7 +3,7 @@
 Preprocess Camargo dataset from raw format to standardized format.
 
 This script processes raw Camargo data from /Volumes/Samsung_T5/raw_data/Samples/Camargo
-and converts it to a standardized format with only gyro columns, similar to canonical_frame_converter.py
+and converts it to a standardized format with gyro and accel columns, similar to canonical_frame_converter.py
 but without the canonical frame conversion step.
 
 Camargo structure:
@@ -15,6 +15,7 @@ Usage:
     --input-root /Volumes/Samsung_T5/raw_data/Samples/Camargo \
     --output-root /Users/luorix/Desktop/MetaMobility\ Lab\ \(CMU\)/data/Camargo_processed \
     [--conditions treadmill] \
+    [--subjects AB01,AB02,AB03] \
     [--unit rad] \
     [--max-frames 40000]
 """
@@ -50,9 +51,13 @@ def standardize_segment_names(df: pd.DataFrame) -> pd.DataFrame:
     
     Transforms:
     - foot_Gyro_X -> foot_r_gyro_x (unilateral, assume right side)
-    - shank_Gyro_X -> shank_r_gyro_x (unilateral, assume right side)
-    - thigh_Gyro_X -> thigh_r_gyro_x (unilateral, assume right side)
+    - foot_Accel_X -> foot_r_accel_x (unilateral, assume right side)
+    - shank_Gyro_X -> tibia_r_gyro_x (shank -> tibia, unilateral, assume right side)
+    - shank_Accel_X -> tibia_r_accel_x (shank -> tibia, unilateral, assume right side)
+    - thigh_Gyro_X -> femur_r_gyro_x (thigh -> femur, unilateral, assume right side)
+    - thigh_Accel_X -> femur_r_accel_x (thigh -> femur, unilateral, assume right side)
     - trunk_Gyro_X -> pelvis_gyro_x (trunk -> pelvis, no side)
+    - trunk_Accel_X -> pelvis_accel_x (trunk -> pelvis, no side)
     """
     df = df.copy()
     new_columns = []
@@ -61,18 +66,27 @@ def standardize_segment_names(df: pd.DataFrame) -> pd.DataFrame:
         col_str = str(col)
         col_lower = col_str.lower()
         
-        # Pattern: segment_Gyro_Axis -> segment_side_gyro_axis
-        pattern = r'\b(foot|shank|thigh|trunk)_(gyro)_([xyz])(?:_|$)'
+        # Pattern: segment_Sensor_Axis -> segment_side_sensor_axis
+        # Handles both gyro and accel
+        pattern = r'\b(foot|shank|thigh|trunk)_(gyro|accel)_([xyz])(?:_|$)'
         match = re.search(pattern, col_lower)
         if match:
             segment, sensor, axis = match.groups()
-            # Convert trunk to pelvis
+            # Convert segment names to canonical format
             if segment == 'trunk':
                 segment = 'pelvis'
                 # Pelvis doesn't have sides
                 new_col = f'{segment}_{sensor}_{axis}'
+            elif segment == 'shank':
+                segment = 'tibia'
+                # Assume right side for unilateral IMUs
+                new_col = f'{segment}_r_{sensor}_{axis}'
+            elif segment == 'thigh':
+                segment = 'femur'
+                # Assume right side for unilateral IMUs
+                new_col = f'{segment}_r_{sensor}_{axis}'
             else:
-                # Other segments: assume right side for unilateral IMUs
+                # foot and others: assume right side for unilateral IMUs
                 new_col = f'{segment}_r_{sensor}_{axis}'
         else:
             new_col = col_str
@@ -83,14 +97,20 @@ def standardize_segment_names(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def extract_gyro_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Extract only gyro columns from IMU data."""
+def extract_imu_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Extract gyro and accel columns from IMU data."""
     gyro_cols = [col for col in df.columns if 'gyro' in col.lower()]
+    accel_cols = [col for col in df.columns if 'accel' in col.lower()]
     
     # Always include time/header column if present
     time_cols = [col for col in df.columns if col.lower() in ['time', 'header']]
     
-    selected_cols = time_cols + gyro_cols
+    selected_cols = time_cols + accel_cols + gyro_cols
+    
+    print(f"    Found {len(gyro_cols)} gyro columns: {gyro_cols}")
+    print(f"    Found {len(accel_cols)} accel columns: {accel_cols}")
+    print(f"    Total IMU columns: {len(selected_cols)}")
+    
     return df[selected_cols]
 
 
@@ -112,8 +132,8 @@ def process_trial(imu_file: Path, id_file: Path, output_dir: Path, unit: str, ma
         if imu_df is None:
             return False
         
-        # Extract only gyro columns
-        imu_df = extract_gyro_columns(imu_df)
+        # Extract gyro and accel columns
+        imu_df = extract_imu_columns(imu_df)
         
         # Rename 'Header' to 'time' if present
         if 'Header' in imu_df.columns:
@@ -258,7 +278,7 @@ def standardize_joint_moment_names(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def process_camargo_dataset(input_root: str, output_root: str, conditions: List[str], 
-                          unit: str, max_frames: int):
+                          unit: str, max_frames: int, subjects: Optional[List[str]] = None):
     """Process the entire Camargo dataset."""
     input_path = Path(input_root)
     output_path = Path(output_root)
@@ -266,14 +286,30 @@ def process_camargo_dataset(input_root: str, output_root: str, conditions: List[
     if not input_path.exists():
         raise ValueError(f"Input directory does not exist: {input_root}")
     
-    # Load subject information (body weights)
-    subject_weights = load_subject_info(output_path)
+    # Load subject information (body weights) from source dataset
+    subject_weights = load_subject_info(input_path)
     
     # Create output directory
     output_path.mkdir(parents=True, exist_ok=True)
     
+    # Copy SubjectInfo.csv from source to target if it exists
+    source_subject_info = input_path / "SubjectInfo.csv"
+    target_subject_info = output_path / "SubjectInfo.csv"
+    if source_subject_info.exists():
+        shutil.copy2(source_subject_info, target_subject_info)
+        print(f"📋 Copied SubjectInfo.csv to output directory")
+    else:
+        print(f"⚠️  Warning: SubjectInfo.csv not found in source directory: {source_subject_info}")
+    
+    # Print processing info
+    if subjects is not None:
+        print(f"🎯 Processing selected subjects: {', '.join(subjects)}")
+    else:
+        print("🔄 Processing all subjects")
+    
     processed_count = 0
     total_trials = 0
+    found_subjects = set()
     
     # Process each subject
     for subject_dir in input_path.iterdir():
@@ -281,6 +317,15 @@ def process_camargo_dataset(input_root: str, output_root: str, conditions: List[
             continue
             
         subject_name = subject_dir.name
+        
+        # Skip subjects not in the selected list if subjects filter is provided
+        if subjects is not None and subject_name not in subjects:
+            continue
+        
+        # Track found subjects
+        if subjects is not None:
+            found_subjects.add(subject_name)
+            
         subject_weight = subject_weights.get(subject_name, None)
         
         if subject_weight is None:
@@ -291,6 +336,32 @@ def process_camargo_dataset(input_root: str, output_root: str, conditions: List[
         # Create subject directory in output
         subject_out = output_path / subject_name
         subject_out.mkdir(exist_ok=True)
+        
+        # Create opensim directory for this subject
+        opensim_out = subject_out / "opensim"
+        opensim_out.mkdir(exist_ok=True)
+        
+        # Find and copy .osim files for this subject
+        osim_files_found = []
+        for date_dir in subject_dir.iterdir():
+            if not date_dir.is_dir() or date_dir.name.startswith('.'):
+                continue
+            # Look for .osim files in any subdirectory
+            for osim_file in date_dir.rglob("*.osim"):
+                if osim_file.is_file():
+                    osim_files_found.append(osim_file)
+        
+        # Copy .osim files to opensim directory
+        for osim_file in osim_files_found:
+            target_osim = opensim_out / f"{subject_name}.osim"
+            try:
+                shutil.copy2(osim_file, target_osim)
+                print(f"    Copied .osim file: {osim_file.name} -> {target_osim.name}")
+            except Exception as e:
+                print(f"    Warning: Failed to copy {osim_file.name}: {e}")
+        
+        if not osim_files_found:
+            print(f"    Warning: No .osim files found for subject {subject_name}")
         
         # Process each date directory
         for date_dir in subject_dir.iterdir():
@@ -340,6 +411,12 @@ def process_camargo_dataset(input_root: str, output_root: str, conditions: List[
                     if process_trial(imu_file, id_file, trial_out, unit, max_frames, subject_weight):
                         processed_count += 1
     
+    # Check for missing subjects if filter was applied
+    if subjects is not None:
+        missing_subjects = set(subjects) - found_subjects
+        if missing_subjects:
+            print(f"\n⚠️  Warning: The following subjects were not found: {', '.join(missing_subjects)}")
+    
     print(f"\nCompleted! Processed {processed_count}/{total_trials} trials successfully.")
     print(f"Output directory: {output_root}")
 
@@ -356,17 +433,21 @@ def main():
                        help="Unit of IMU gyro in source CSV")
     parser.add_argument("--max-frames", type=int, default=40000, 
                        help="Maximum number of frames to process per trial")
+    parser.add_argument("--subjects", 
+                       help="Comma-separated list of subjects to process (e.g., AB01,AB02,AB03). If not provided, processes all subjects.")
     
     args = parser.parse_args()
     
     conditions = [c.strip() for c in args.conditions.split(",") if c.strip()]
+    subjects = [s.strip() for s in args.subjects.split(",") if s.strip()] if args.subjects else None
     
     process_camargo_dataset(
         args.input_root, 
         args.output_root, 
         conditions, 
         args.unit, 
-        args.max_frames
+        args.max_frames,
+        subjects
     )
 
 

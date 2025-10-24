@@ -63,16 +63,14 @@ def run_batch_analysis(args):
         str(Path(__file__).parent / "batch_imu_optimization.py"),
         "--dataset-root", args.dataset,
         "--output-root", args.output,
+        "--condition", args.condition,
+        "--trial", args.trial,
         "--segments", args.segments,
-        "--max-frames", str(args.max_frames),
-        "--max-trials-per-subject", str(args.max_trials_per_subject)
+        "--max-frames", str(args.max_frames)
     ]
     
     if args.subjects:
         cmd.extend(["--subjects", args.subjects])
-    
-    if args.conditions:
-        cmd.extend(["--conditions", args.conditions])
     
     if args.gyro_in_degrees:
         cmd.append("--gyro-in-degrees")
@@ -104,19 +102,19 @@ def main():
     single_parser.add_argument("--trial", required=True, help="Trial name")
     single_parser.add_argument("--output", required=True, help="Output directory")
     single_parser.add_argument("--segments", default="all", help="Comma-separated segments or 'all' (default: all)")
-    single_parser.add_argument("--max-frames", type=int, default=2000, help="Max frames (default: 2000)")
+    single_parser.add_argument("--max-frames", type=int, default=100000, help="Max frames (default: 100000)")
     single_parser.add_argument("--gyro-in-degrees", action="store_true", help="Use degrees for gyro data")
     single_parser.add_argument("--debug", action="store_true", help="Enable debug mode with separate IMU plots")
     
     # Batch parser
-    batch_parser = subparsers.add_parser('batch', help='Run batch analysis')
+    batch_parser = subparsers.add_parser('batch', help='Run batch analysis across subjects')
     batch_parser.add_argument("--dataset", required=True, help="Path to Final dataset root")
     batch_parser.add_argument("--output", required=True, help="Output directory")
     batch_parser.add_argument("--subjects", help="Comma-separated subjects (default: all)")
-    batch_parser.add_argument("--conditions", help="Comma-separated conditions (default: all)")
+    batch_parser.add_argument("--condition", required=True, help="Condition name")
+    batch_parser.add_argument("--trial", required=True, help="Trial name")
     batch_parser.add_argument("--segments", default="all", help="Comma-separated segments or 'all' (default: all)")
-    batch_parser.add_argument("--max-frames", type=int, default=2000, help="Max frames (default: 2000)")
-    batch_parser.add_argument("--max-trials-per-subject", type=int, default=10, help="Max trials per subject (default: 10)")
+    batch_parser.add_argument("--max-frames", type=int, default=100000, help="Max frames (default: 100000)")
     batch_parser.add_argument("--gyro-in-degrees", action="store_true", help="Use degrees for gyro data")
     batch_parser.add_argument("--debug", action="store_true", help="Enable debug mode with separate IMU plots")
     

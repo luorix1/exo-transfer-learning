@@ -3,8 +3,8 @@
 Transform real IMU data to OpenSim reference frame using optimized rotation matrices.
 
 This script applies the rotation matrices found during IMU orientation optimization
-to transform the real IMU gyro data from the IMU's local frame to the OpenSim
-reference frame (x: forward, y: up, z: right for each body segment).
+to transform the real IMU gyroscope and accelerometer data from the IMU's local 
+frame to the OpenSim reference frame (x: forward, y: up, z: right for each body segment).
 
 The optimization process finds R such that:
     R * sim_data ≈ real_data
@@ -14,6 +14,9 @@ To transform real_data to the same frame as sim_data (OpenSim frame), we apply:
     
 This is because R transforms from OpenSim frame to IMU frame, so R^T (inverse)
 transforms from IMU frame to OpenSim frame.
+
+Both gyroscope and accelerometer data are transformed using the same rotation matrix
+since they are both 3D vectors measured in the IMU's local frame.
 
 Usage:
     # Create new canonical dataset
@@ -42,7 +45,7 @@ import pandas as pd
 def load_rotation_matrices(results_file: Path) -> Optional[Dict[str, np.ndarray]]:
     """
     Load optimal rotation matrices from optimization results JSON.
-    Supports both single-segment and multi-segment formats.
+    Supports single-segment, multi-segment, and batch formats.
     
     Returns:
         Dict mapping segment names to rotation matrices, or None on error
@@ -53,8 +56,38 @@ def load_rotation_matrices(results_file: Path) -> Optional[Dict[str, np.ndarray]
         
         rotation_matrices = {}
         
+        # Check if this is a batch results file (multiple subjects)
+        if 'subjects' in results and 'metadata' in results:
+            print(f"📊 Loading batch results from: {results_file}")
+            metadata = results['metadata']
+            print(f"   Dataset: {metadata.get('dataset', 'Unknown')}")
+            print(f"   Condition: {metadata.get('condition', 'Unknown')}")
+            print(f"   Trial: {metadata.get('trial', 'Unknown')}")
+            print(f"   Subjects: {metadata.get('total_subjects', 0)}")
+            
+            # For batch results, we need to know which subject to use
+            # This function will return the first subject's matrices
+            # The caller should handle subject-specific loading
+            subjects = results['subjects']
+            if subjects:
+                first_subject = list(subjects.keys())[0]
+                print(f"   Using matrices from subject: {first_subject}")
+                
+                subject_data = subjects[first_subject]
+                if 'segments' in subject_data:
+                    for segment_name, segment_data in subject_data['segments'].items():
+                        rotation_matrix = np.array(segment_data['optimal_rotation_matrix'])
+                        
+                        # Verify it's a valid rotation matrix
+                        det = np.linalg.det(rotation_matrix)
+                        if not np.isclose(det, 1.0, atol=0.01):
+                            print(f"⚠️  Warning: Rotation matrix for {segment_name} has determinant {det:.6f}, expected 1.0")
+                        
+                        rotation_matrices[segment_name] = rotation_matrix
+                        print(f"   ✓ Loaded rotation matrix for: {segment_name}")
+        
         # Check if this is a combined results file (multi-segment)
-        if 'segments' in results:
+        elif 'segments' in results:
             print(f"📊 Loading multi-segment rotation matrices from: {results_file}")
             for segment_name, segment_data in results['segments'].items():
                 rotation_matrix = np.array(segment_data['optimal_rotation_matrix'])
@@ -155,6 +188,39 @@ def find_gyro_columns(df: pd.DataFrame, segment: str = "thigh_r") -> Optional[Li
     return None
 
 
+def find_accel_columns(df: pd.DataFrame, segment: str = "thigh_r") -> Optional[List[str]]:
+    """
+    Find accel columns for a specific segment in the dataframe.
+    
+    Args:
+        df: DataFrame with IMU data
+        segment: Segment name (e.g., "thigh_r", "thigh_l")
+    
+    Returns:
+        List of column names [x, y, z] or None if not found
+    """
+    # Try different naming conventions
+    candidates = [
+        [f"{segment}_accel_x", f"{segment}_accel_y", f"{segment}_accel_z"],
+        [f"{segment.upper()}_ACCELX", f"{segment.upper()}_ACCELY", f"{segment.upper()}_ACCELZ"],
+        [f"{segment}_Accel_X", f"{segment}_Accel_Y", f"{segment}_Accel_Z"],
+    ]
+    
+    # Case-insensitive search
+    lower_cols = {c.lower(): c for c in df.columns}
+    
+    for candidate_set in candidates:
+        actual_cols = []
+        for c in candidate_set:
+            if c.lower() in lower_cols:
+                actual_cols.append(lower_cols[c.lower()])
+        
+        if len(actual_cols) == 3:
+            return actual_cols
+    
+    return None
+
+
 def get_imu_segment_name(opensim_segment: str) -> str:
     """Map OpenSim segment names to IMU data segment names"""
     segment_mapping = {
@@ -211,16 +277,40 @@ def transform_trial_imu_data(
                 nan_count = np.sum(np.isnan(gyro_data))
                 print(f"  ⚠️  Warning: {nan_count} NaN values found in {opensim_segment} gyro data")
             
-            # Transform data (apply inverse rotation to go from IMU frame to OpenSim frame)
-            transformed_data = transform_gyro_data(gyro_data, rotation_matrix, inverse=True)
+            # Transform gyro data (apply inverse rotation to go from IMU frame to OpenSim frame)
+            transformed_gyro = transform_gyro_data(gyro_data, rotation_matrix, inverse=True)
             
             # Replace original gyro columns with transformed data
             for i, col in enumerate(gyro_cols):
-                df[col] = transformed_data[:, i]
+                df[col] = transformed_gyro[:, i]
             
-            # Print statistics
-            print(f"    Original std: {np.std(gyro_data, axis=0)}")
-            print(f"    Transformed std: {np.std(transformed_data, axis=0)}")
+            # Print gyro statistics
+            print(f"    Gyro original std: {np.std(gyro_data, axis=0)}")
+            print(f"    Gyro transformed std: {np.std(transformed_gyro, axis=0)}")
+            
+            # Also transform acceleration data if present
+            accel_cols = find_accel_columns(df, imu_segment)
+            if accel_cols is not None:
+                print(f"  Found accel columns for {opensim_segment}: {accel_cols}")
+                
+                # Extract accel data
+                accel_data = df[accel_cols].values
+                
+                # Check for NaN values
+                if np.any(np.isnan(accel_data)):
+                    nan_count = np.sum(np.isnan(accel_data))
+                    print(f"  ⚠️  Warning: {nan_count} NaN values found in {opensim_segment} accel data")
+                
+                # Transform accel data (same rotation as gyro)
+                transformed_accel = transform_gyro_data(accel_data, rotation_matrix, inverse=True)
+                
+                # Replace original accel columns with transformed data
+                for i, col in enumerate(accel_cols):
+                    df[col] = transformed_accel[:, i]
+                
+                # Print accel statistics
+                print(f"    Accel original std: {np.std(accel_data, axis=0)}")
+                print(f"    Accel transformed std: {np.std(transformed_accel, axis=0)}")
             
             transformed_count += 1
         
