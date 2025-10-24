@@ -3,8 +3,7 @@
 Preprocess Camargo dataset from raw format to standardized format.
 
 This script processes raw Camargo data from /Volumes/Samsung_T5/raw_data/Samples/Camargo
-and converts it to a standardized format with gyro and accel columns, similar to canonical_frame_converter.py
-but without the canonical frame conversion step.
+and converts it to a standardized format with gyro and accel columns
 
 Camargo structure:
 - Subject/Date/Condition/imu/trial.csv

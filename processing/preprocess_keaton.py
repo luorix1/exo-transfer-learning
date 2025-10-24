@@ -3,8 +3,7 @@
 Preprocess Keaton dataset from raw format to standardized format.
 
 This script processes raw Keaton data from /Volumes/Samsung_T5/raw_data/Samples/Keaton
-and converts it to a standardized format with only gyro columns, similar to canonical_frame_converter.py
-but without the canonical frame conversion step.
+and converts it to a standardized format with only gyro columns
 
 Keaton structure:
 - Subject/Trial/AB01_trial_imu_real.csv

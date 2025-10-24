@@ -3,8 +3,7 @@
 Preprocess Molinaro dataset from raw format to standardized format.
 
 This script processes raw Molinaro data from /Volumes/Samsung_T5/raw_data/Samples/Molinaro
-and converts it to a standardized format with only gyro columns, similar to canonical_frame_converter.py
-but without the canonical frame conversion step.
+and converts it to a standardized format with only gyro columns
 
 Usage:
   python preprocess_molinaro.py \
