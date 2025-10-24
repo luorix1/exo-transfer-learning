@@ -158,14 +158,19 @@ def predict_on_trial(
             input_data_l = imu_df[thigh_l_gyro[:3]].values
         
         # Stack left and right data (matching dataloader logic)
-        if input_data_l is not None and len(input_data_l) > 0:
-            # Randomly choose order (matching dataloader)
-            if np.random.randint(0, 2):
-                input_data = np.vstack((input_data_r, input_data_l))
-            else:
-                input_data = np.vstack((input_data_l, input_data_r))
-        else:
+        # For memo dataset, only use right side data to avoid sign convention issues
+        if dataset_type == 'memo':
             input_data = input_data_r
+        else:
+            # For other datasets, use both left and right data
+            if input_data_l is not None and len(input_data_l) > 0:
+                # Randomly choose order (matching dataloader)
+                if np.random.randint(0, 2):
+                    input_data = np.vstack((input_data_r, input_data_l))
+                else:
+                    input_data = np.vstack((input_data_l, input_data_r))
+            else:
+                input_data = input_data_r
 
     elif len(imu_segments) == 2:
         # Dual IMU mode
@@ -205,14 +210,19 @@ def predict_on_trial(
                 input_data_l = imu_df[pelvis_gyro[:3] + thigh_l_gyro[:3]].values
             
             # Stack left and right data (matching dataloader logic)
-            if input_data_l is not None and len(input_data_l) > 0:
-                # Randomly choose order (matching dataloader)
-                if np.random.randint(0, 2):
-                    input_data = np.vstack((input_data_r, input_data_l))
-                else:
-                    input_data = np.vstack((input_data_l, input_data_r))
-            else:
+            # For memo dataset, only use right side data to avoid sign convention issues
+            if dataset_type == 'memo':
                 input_data = input_data_r
+            else:
+                # For other datasets, use both left and right data
+                if input_data_l is not None and len(input_data_l) > 0:
+                    # Randomly choose order (matching dataloader)
+                    if np.random.randint(0, 2):
+                        input_data = np.vstack((input_data_r, input_data_l))
+                    else:
+                        input_data = np.vstack((input_data_l, input_data_r))
+                else:
+                    input_data = input_data_r
         else:
             print(f"Unsupported IMU segment configuration: {imu_segments}")
             return None, None, None
@@ -303,18 +313,26 @@ def predict_on_trial(
             true_data_l = butter_lowpass_zero_phase(true_data_l, cutoff_hz=label_filter_hz)
         
         # Stack left and right data (matching dataloader logic)
-        if true_data_r is not None and true_data_l is not None:
-            # Randomly choose order (matching dataloader)
-            if np.random.randint(0, 2):
-                true_data = np.vstack((true_data_r, true_data_l))
+        # For memo dataset, only use right side data to avoid sign convention issues
+        if dataset_type == 'memo':
+            if true_data_r is not None:
+                true_data = true_data_r
             else:
-                true_data = np.vstack((true_data_l, true_data_r))
-        elif true_data_r is not None:
-            true_data = true_data_r
-        elif true_data_l is not None:
-            true_data = true_data_l
+                true_data = None
         else:
-            true_data = None
+            # For other datasets, use both left and right data
+            if true_data_r is not None and true_data_l is not None:
+                # Randomly choose order (matching dataloader)
+                if np.random.randint(0, 2):
+                    true_data = np.vstack((true_data_r, true_data_l))
+                else:
+                    true_data = np.vstack((true_data_l, true_data_r))
+            elif true_data_r is not None:
+                true_data = true_data_r
+            elif true_data_l is not None:
+                true_data = true_data_l
+            else:
+                true_data = None
         
         if true_data is not None:
             # Apply temporary sign flip for Canonical_MeMo dataset
@@ -379,18 +397,26 @@ def predict_on_trial(
                 true_data_l = butter_lowpass_zero_phase(true_data_l, cutoff_hz=label_filter_hz)
             
             # Stack left and right data (matching dataloader logic)
-            if true_data_r is not None and true_data_l is not None:
-                # Randomly choose order (matching dataloader)
-                if np.random.randint(0, 2):
-                    true_data = np.vstack((true_data_r, true_data_l))
+            # For memo dataset, only use right side data to avoid sign convention issues
+            if dataset_type == 'memo':
+                if true_data_r is not None:
+                    true_data = true_data_r
                 else:
-                    true_data = np.vstack((true_data_l, true_data_r))
-            elif true_data_r is not None:
-                true_data = true_data_r
-            elif true_data_l is not None:
-                true_data = true_data_l
+                    true_data = None
             else:
-                true_data = None
+                # For other datasets, use both left and right data
+                if true_data_r is not None and true_data_l is not None:
+                    # Randomly choose order (matching dataloader)
+                    if np.random.randint(0, 2):
+                        true_data = np.vstack((true_data_r, true_data_l))
+                    else:
+                        true_data = np.vstack((true_data_l, true_data_r))
+                elif true_data_r is not None:
+                    true_data = true_data_r
+                elif true_data_l is not None:
+                    true_data = true_data_l
+                else:
+                    true_data = None
             
             if true_data is not None:
                 for i in range(num_windows):
