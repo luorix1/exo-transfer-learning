@@ -1,27 +1,16 @@
 #!/usr/bin/env python3
 """
-IMU Position Optimization for Final Dataset Structure
+IMU Position Optimization
+------------------------
+Optimizes the 3D position of IMU sensors on body segments using pre-determined orientations.
+Uses the rotation matrices from orientation optimization results to find optimal IMU positions.
 
-This script optimizes the 3D position of an IMU on a body segment
-using a pre-determined orientation (from orientation optimization).
-The position is optimized to minimize error between simulated and real
-accelerometer data.
-
-Works with Final dataset structure:
-- <dataset>/<subject>/<condition>/<trial>/Input/imu_data.csv (real IMU data)
-- <dataset>/<subject>/<condition>/<trial>/opensim/motion.sto (OpenSim motion)
-- <dataset>/<subject>/opensim/<subject>.osim (OpenSim model)
-- Orientation results from prior optimization (JSON file)
-
-Usage:
-    python imu_position_optimization.py \
-        --dataset-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo" \
-        --subject AB21 \
-        --condition treadmill \
-        --trial treadmill_03_01 \
-        --segment femur_r \
-        --orientation-results results/camargo_multisegment/femur_r/optimization_results.json \
-        --output results/position_optimization/
+Key Features:
+- Loads pre-computed rotation matrices from orientation optimization
+- Optimizes 3D position (x, y, z) of IMU on each body segment
+- Uses OpenSim's PhysicalOffsetFrame to position IMUs
+- Minimizes difference between real and simulated IMU signals
+- Creates visualizations showing position optimization results
 """
 
 import opensim as osim
@@ -29,1008 +18,645 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import argparse
-from scipy.interpolate import interp1d
-from scipy.optimize import differential_evolution, minimize
-from scipy.signal import butter, filtfilt
 import json
 from pathlib import Path
+from scipy.optimize import minimize
+from scipy.signal import butter, filtfilt, lfilter
+from scipy.interpolate import interp1d
 from tqdm import tqdm
-import sys
 
 
-def apply_lowpass_filter(data, cutoff_freq=10.0, sample_rate=200.0):
-    """Apply low-pass Butterworth filter to remove high-frequency artifacts"""
-    try:
-        if len(data) < 6:
-            return data
-        nyquist = sample_rate / 2.0
-        normalized_cutoff = cutoff_freq / nyquist
-        b, a = butter(N=4, Wn=normalized_cutoff, btype="low", analog=False)
-        filtered_data = np.zeros_like(data)
-        for i in range(data.shape[1]):
-            filtered_data[:, i] = filtfilt(b, a, data[:, i])
-        return filtered_data
-    except Exception as e:
-        print(f"   ⚠️  Filtering failed: {e}, returning original data")
+# ---------------- Filters ---------------- #
+def butter_lowpass_zero_phase(data: np.ndarray,
+                              cutoff_hz: float = 6.0,
+                              fs_hz: float = 200.0,
+                              order: int = 4) -> np.ndarray:
+    """
+    Apply zero-phase Butterworth low-pass filter along time axis.
+    Handles multi-axis arrays (N×D).
+    """
+    if data is None or data.size == 0:
         return data
-
-
-def quaternion_to_rotation_matrix(q):
-    """Convert quaternion [w, x, y, z] to rotation matrix"""
-    w, x, y, z = q
-    norm = np.sqrt(w * w + x * x + y * y + z * z)
-    if norm == 0:
-        return np.eye(3)
-    w, x, y, z = w / norm, x / norm, y / norm, z / norm
-
-    R = np.array(
-        [
-            [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-            [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
-            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
-        ]
-    )
-    return R
-
-
-def get_segment_bounds(model, segment_name):
-    """
-    Extract segment dimensions from OpenSim model to define reasonable search bounds.
-    
-    Returns bounds in meters as (x_min, x_max, y_min, y_max, z_min, z_max)
-    """
-    print(f"\n📏 Extracting segment dimensions for {segment_name}...")
-    
+    nyq = 0.5 * fs_hz
+    wn = cutoff_hz / nyq
+    b, a = butter(order, wn, btype='low', analog=False)
     try:
-        body = model.getBodySet().get(segment_name)
-        
-        # Default bounds based on typical segment sizes (in meters)
-        default_bounds = {
-            "femur_r": (-0.05, 0.05, -0.25, 0.05, -0.05, 0.05),  # Long axis along -Y
-            "femur_l": (-0.05, 0.05, -0.25, 0.05, -0.05, 0.05),
-            "tibia_r": (-0.05, 0.05, -0.30, 0.05, -0.05, 0.05),  # Long axis along -Y
-            "tibia_l": (-0.05, 0.05, -0.30, 0.05, -0.05, 0.05),
-            "pelvis": (-0.10, 0.10, -0.10, 0.10, -0.10, 0.10),
-        }
-        
-        bounds = default_bounds.get(segment_name, (-0.10, 0.10, -0.20, 0.10, -0.10, 0.10))
-        
-        # Try to get actual geometry info if available
-        try:
-            # Get attached geometry
-            geom_set = body.getPropertyByName("attached_geometry")
-            if geom_set.size() > 0:
-                print(f"   Found {geom_set.size()} geometry objects attached to {segment_name}")
-        except:
-            pass
-        
-        print(f"   Using bounds: X=[{bounds[0]:.3f}, {bounds[1]:.3f}]m, "
-              f"Y=[{bounds[2]:.3f}, {bounds[3]:.3f}]m, "
-              f"Z=[{bounds[4]:.3f}, {bounds[5]:.3f}]m")
-        
-        return bounds
-        
-    except Exception as e:
-        print(f"   ⚠️  Could not extract geometry: {e}")
-        # Default conservative bounds
-        default = (-0.10, 0.10, -0.20, 0.10, -0.10, 0.10)
-        print(f"   Using default bounds: X=[{default[0]:.3f}, {default[1]:.3f}]m, "
-              f"Y=[{default[2]:.3f}, {default[3]:.3f}]m, "
-              f"Z=[{default[4]:.3f}, {default[5]:.3f}]m")
-        return default
+        return np.column_stack([
+            filtfilt(
+                b, a, data[:, i],
+                axis=0,
+                method='pad',
+                padlen=min(
+                    3 * max(len(a), len(b)),
+                    max(0, len(data) - 1)
+                )
+            ) for i in range(data.shape[1])
+        ])
+    except ValueError:
+        # If sequence too short for filtfilt padlen, fall back to lfilter twice
+        out = np.zeros_like(data)
+        for i in range(data.shape[1]):
+            y = lfilter(b, a, data[:, i], axis=0)
+            y = lfilter(b, a, y[::-1], axis=0)[::-1]
+            out[:, i] = y
+        return out
 
 
-def generate_simulated_imu_data_at_position(
-    model_file, motion_file, segment_name, imu_name, 
-    position_offset, orientation_matrix, max_frames
-):
+# ---------------- Load Orientation Results ---------------- #
+def load_orientation_results(results_dir, segment):
+    """Load rotation matrix from orientation optimization results."""
+    results_file = Path(results_dir) / segment / "optimization_results.json"
+    if not results_file.exists():
+        print(f"❌ Orientation results not found: {results_file}")
+        return None
+    
+    with open(results_file, 'r') as f:
+        data = json.load(f)
+    
+    rotation_matrix = np.array(data['result']['rotation_matrix'])
+    print(f"✓ Loaded orientation results for {segment}")
+    print(f"  - Improvement: {data['result']['improvement_percent']:.1f}%")
+    print(f"  - Z-correlation: {data['result']['z_correlation']:.3f}")
+    
+    return rotation_matrix
+
+
+# ---------------- Real IMU Data Loading ---------------- #
+def _find_cols_ci(df, candidates):
+    lower = {c.lower(): c for c in df.columns}
+    for cand in candidates:
+        act = []
+        ok = True
+        for n in cand:
+            if n.lower() in lower:
+                act.append(lower[n.lower()])
+            else:
+                ok = False
+                break
+        if ok:
+            return act
+    return None
+
+
+def load_real_imu_data_for_segment(csv_path, segment):
+    """Load real IMU accelerometer data for a specific segment."""
+    df = pd.read_csv(csv_path)
+    
+    # Try different column naming conventions for accelerometer data
+    accel_cols = _find_cols_ci(
+        df,
+        [
+            [f"{segment}_accel_x", f"{segment}_accel_y", f"{segment}_accel_z"],
+            [f"{segment}_Accel_X", f"{segment}_Accel_Y", f"{segment}_Accel_Z"],
+            [f"{segment.upper()}_ACCELX", f"{segment.upper()}_ACCELY", f"{segment.upper()}_ACCELZ"],
+            ["thigh_r_accel_x", "thigh_r_accel_y", "thigh_r_accel_z"],
+            ["thigh_l_accel_x", "thigh_l_accel_y", "thigh_l_accel_z"],
+        ],
+    )
+    
+    if accel_cols is None:
+        print(f"❌ No accelerometer columns found for segment '{segment}'")
+        return None, None, None, False
+    
+    accel = df[accel_cols].to_numpy()
+    lower = {c.lower(): c for c in df.columns}
+    tcol = lower.get("header", lower.get("time", None))
+    t = df[tcol].to_numpy() if tcol else np.arange(len(accel))
+    
+    return accel, None, t, True
+
+
+# ---------------- OpenSim Simulation with Position ---------------- #
+def generate_simulated_imu_data_with_position(model_file, motion_file, segment, imu_name, 
+                                            rotation_matrix, position, max_frames):
     """
-    Generate simulated IMU data at a specific position with known orientation.
+    Generate simulated IMU data with specific orientation and position.
     
     Args:
         model_file: Path to OpenSim model
         motion_file: Path to motion file
-        segment_name: Name of body segment
-        imu_name: Name for IMU
-        position_offset: [x, y, z] offset in segment frame (meters)
-        orientation_matrix: 3x3 rotation matrix for IMU orientation
-        max_frames: Maximum number of frames to process
-    
-    Returns:
-        sim_acc_signals: Nx3 array of accelerometer data
-        sim_times: N array of time stamps
-        success: boolean
+        segment: Body segment name
+        imu_name: Name for the IMU
+        rotation_matrix: 3x3 rotation matrix for orientation
+        position: 3D position [x, y, z] in meters
+        max_frames: Maximum frames to process
     """
     try:
-        # Load model and add IMU
-        geometry_path = Path("/Applications/OpenSim 4.5/Geometry")
-        osim.ModelVisualizer.addDirToGeometrySearchPaths(str(geometry_path))
-        
-        model = osim.Model(model_file)
-        model.setUseVisualizer(False)
-        
-        # Create and attach IMU to target segment
-        target_body = model.getBodySet().get(segment_name)
-        imu = osim.IMU()
-        imu.setName(imu_name)
-        
-        # Create a PhysicalOffsetFrame with both position and orientation
-        imu_frame = osim.PhysicalOffsetFrame()
-        imu_frame.setName(f"{imu_name}_frame")
-        imu_frame.setParentFrame(target_body)
-        
-        # Create rotation from orientation matrix
-        rotation = osim.Rotation(osim.Mat33(
-            orientation_matrix[0, 0], orientation_matrix[0, 1], orientation_matrix[0, 2],
-            orientation_matrix[1, 0], orientation_matrix[1, 1], orientation_matrix[1, 2],
-            orientation_matrix[2, 0], orientation_matrix[2, 1], orientation_matrix[2, 2]
-        ))
-        
-        # Create translation (position offset in segment frame)
-        vec3_offset = osim.Vec3(position_offset[0], position_offset[1], position_offset[2])
-        
-        # Create transform with both rotation and translation
-        transform = osim.Transform(rotation, vec3_offset)
-        
-        imu_frame.setOffsetTransform(transform)
-        
-        # Attach the frame to the target body and the IMU to the frame
-        target_body.addComponent(imu_frame)
-        imu.connectSocket_frame(imu_frame)
-        model.addComponent(imu)
-        
-        # Initialize the system
-        state = model.initSystem()
-        
-        # Load motion data
-        motion_table = osim.TimeSeriesTable(motion_file)
-        time_col = motion_table.getIndependentColumn()
-        coord_names = list(motion_table.getColumnLabels())
-        
-        # Extract simulated IMU data
-        sim_acc_signals = []
-        sim_times = []
-        
-        num_frames = min(max_frames, motion_table.getNumRows())
-        
-        for i in range(num_frames):
-            t = time_col[i]
-            state.setTime(t)
-            
-            # Set coordinates and speeds
-            for coord in model.getCoordinateSet():
-                q_name = coord.getName()
-                u_name = q_name + "_u"
-                if q_name in coord_names:
-                    coord.setValue(state, motion_table.getDependentColumn(q_name)[i])
-                if u_name in coord_names:
-                    coord.setSpeedValue(state, motion_table.getDependentColumn(u_name)[i])
-            
-            # Realize acceleration to compute accelerometer signal
-            model.realizeAcceleration(state)
-            
-            acc = imu.calcAccelerometerSignal(state)
-            # Convert from mm/s² to m/s² (OpenSim returns accelerations in mm/s²)
-            acc_array = np.array([acc.get(j) / 1000.0 for j in range(3)])
-            
-            sim_acc_signals.append(acc_array)
-            sim_times.append(t)
-            
-            del acc
-        
-        sim_acc_signals = np.array(sim_acc_signals)
-        sim_times = np.array(sim_times)
-        
-        # Clean up OpenSim objects
-        del imu, imu_frame, target_body, state, model
-        
-        return sim_acc_signals, sim_times, True
-        
-    except Exception as e:
-        print(f"❌ Error generating simulated IMU data: {e}")
-        return None, None, False
-
-
-def load_real_imu_acceleration(real_imu_file, segment_name):
-    """Load real IMU acceleration data from CSV file"""
-    try:
-        imu_df = pd.read_csv(real_imu_file)
-        
-        # Build case-insensitive column name map
-        lower_to_actual = {c.lower(): c for c in imu_df.columns}
-        
-        def get_cols(candidates):
-            actual = []
-            for name in candidates:
-                key = name.lower()
-                if key in lower_to_actual:
-                    actual.append(lower_to_actual[key])
-                else:
-                    return None
-            return actual
-        
-        # Extract accelerometer data (try multiple naming conventions)
-        acc_candidates = [
-            [f"{segment_name}_accel_x", f"{segment_name}_accel_y", f"{segment_name}_accel_z"],
-            [f"{segment_name}_Accel_X", f"{segment_name}_Accel_Y", f"{segment_name}_Accel_Z"],
-            [f"{segment_name}_acc_x", f"{segment_name}_acc_y", f"{segment_name}_acc_z"],
-            [f"{segment_name.upper()}_ACCELX", f"{segment_name.upper()}_ACCELY", f"{segment_name.upper()}_ACCELZ"],
-        ]
-        
-        acc_cols_actual = None
-        for candidate_set in acc_candidates:
-            acc_cols_actual = get_cols(candidate_set)
-            if acc_cols_actual is not None:
-                print(f"✓ Found accelerometer columns: {acc_cols_actual}")
-                break
-        
-        if acc_cols_actual is None:
-            print(f"❌ No accelerometer columns found for segment '{segment_name}' in {real_imu_file}")
-            print(f"   Available columns: {list(imu_df.columns)}")
-            return None, None, False
-        
-        real_acc_signals = imu_df[acc_cols_actual].values
-        
-        # Time/Header column (case-insensitive)
-        header_col = lower_to_actual.get('header', lower_to_actual.get('time', None))
-        real_times = imu_df[header_col].values if header_col else np.arange(len(real_acc_signals))
-        
-        print(f"✓ Loaded real accelerometer data: {len(real_times)} frames")
-        print(f"   Time range: {real_times[0]:.3f}s to {real_times[-1]:.3f}s")
-        print(f"   Accel range: {np.min(real_acc_signals, axis=0)} to {np.max(real_acc_signals, axis=0)} m/s²")
-        
-        return real_acc_signals, real_times, True
-        
-    except Exception as e:
-        print(f"❌ Error loading real IMU acceleration data: {e}")
-        return None, None, False
-
-
-def align_time_series(sim_times, sim_acc_signals, real_times, real_acc_signals):
-    """Align simulated and real IMU data in time"""
-    # Find overlapping time range
-    overlap_start = max(sim_times[0], real_times[0])
-    overlap_end = min(sim_times[-1], real_times[-1])
-    
-    if overlap_start >= overlap_end:
-        print(f"❌ No overlapping time range found!")
-        return None, None, None, False
-    
-    # Create common time grid
-    num_points = min(len(sim_times), len(real_times), 1000)
-    common_times = np.linspace(overlap_start, overlap_end, num_points)
-    
-    # Interpolate both datasets to common time grid
-    sim_interp = interp1d(
-        sim_times,
-        sim_acc_signals,
-        axis=0,
-        kind="linear",
-        bounds_error=False,
-        fill_value=0,
-    )
-    real_interp = interp1d(
-        real_times,
-        real_acc_signals,
-        axis=0,
-        kind="linear",
-        bounds_error=False,
-        fill_value=0,
-    )
-    
-    sim_aligned = sim_interp(common_times)
-    real_aligned = real_interp(common_times)
-    
-    return sim_aligned, real_aligned, common_times, True
-
-
-class PositionOptimizer:
-    """
-    Optimizer for IMU position on a body segment.
-    Uses global optimization (differential evolution) to find optimal position.
-    """
-    
-    def __init__(self, model_file, motion_file, real_imu_file, segment_name, 
-                 imu_data_name, orientation_matrix, bounds, max_frames=2000):
-        self.model_file = model_file
-        self.motion_file = motion_file
-        self.real_imu_file = real_imu_file
-        self.segment_name = segment_name
-        self.imu_data_name = imu_data_name
-        self.orientation_matrix = orientation_matrix
-        self.bounds = bounds
-        self.max_frames = max_frames
-        
-        # Load real IMU data once
-        print(f"\n🔄 Loading real IMU acceleration data...")
-        self.real_acc_signals, self.real_times, success = load_real_imu_acceleration(
-            real_imu_file, imu_data_name
+        osim.ModelVisualizer.addDirToGeometrySearchPaths(
+            "/Applications/OpenSim 4.5/Geometry"
         )
-        if not success:
-            raise ValueError("Failed to load real IMU data")
-        
-        # Cache for optimization
-        self.eval_count = 0
-        self.best_cost = float('inf')
-        self.best_position = None
-    
-    def objective_function(self, position):
-        """
-        Objective function for optimization.
-        Evaluates MSE between simulated and real acceleration at given position.
-        
-        Args:
-            position: [x, y, z] position offset in meters
-        
-        Returns:
-            cost: Mean squared error
-        """
-        self.eval_count += 1
-        
-        # Generate simulated data at this position
-        sim_acc, sim_times, success = generate_simulated_imu_data_at_position(
-            self.model_file,
-            self.motion_file,
-            self.segment_name,
-            f"imu_pos_opt_{self.eval_count}",
-            position,
-            self.orientation_matrix,
-            self.max_frames
-        )
-        
-        if not success:
-            return 1e6  # Large penalty for failed simulation
-        
-        # Align time series
-        sim_aligned, real_aligned, _, success = align_time_series(
-            sim_times, sim_acc, self.real_times, self.real_acc_signals
-        )
-        
-        if not success:
-            return 1e6
-        
-        # Compute MSE
-        cost = np.mean((sim_aligned - real_aligned) ** 2)
-        
-        # Track best solution
-        if cost < self.best_cost:
-            self.best_cost = cost
-            self.best_position = position.copy()
-            print(f"   Eval {self.eval_count}: New best cost = {cost:.6f} at position {position}")
-        
-        return cost
-    
-    def optimize(self, method='differential_evolution', circle_radius=0.04):
-        """
-        Run optimization to find best IMU position.
-        
-        Args:
-            method: 'differential_evolution' (global) or 'nelder-mead' (local) or 
-                    'two-stage' (global+local) or 'circular' (search on circle)
-            circle_radius: Radius in meters for circular search (default: 0.04 = 4cm)
-        
-        Returns:
-            result: optimization result dictionary
-        """
-        print(f"\n🔄 Starting position optimization using {method}...")
-        
-        if method != 'circular':
-            print(f"   Search bounds: X=[{self.bounds[0]:.3f}, {self.bounds[1]:.3f}]m")
-            print(f"                  Y=[{self.bounds[2]:.3f}, {self.bounds[3]:.3f}]m")
-            print(f"                  Z=[{self.bounds[4]:.3f}, {self.bounds[5]:.3f}]m")
-        
-        # Prepare bounds for scipy
-        opt_bounds = [
-            (self.bounds[0], self.bounds[1]),  # x bounds
-            (self.bounds[2], self.bounds[3]),  # y bounds
-            (self.bounds[4], self.bounds[5]),  # z bounds
-        ]
-        
-        if method == 'differential_evolution':
-            # Global optimization - good for finding global minimum
-            result = differential_evolution(
-                self.objective_function,
-                bounds=opt_bounds,
-                maxiter=50,  # Limit iterations due to expensive function
-                popsize=10,  # Population size
-                atol=1e-4,
-                tol=1e-4,
-                seed=42,
-                workers=1,  # Sequential to avoid OpenSim issues
-                updating='deferred',
-                disp=True
-            )
-            
-            optimal_position = result.x
-            final_cost = result.fun
-            
-        elif method == 'two-stage':
-            # Two-stage optimization: global search + local refinement
-            print("\n🎯 Stage 1: Global search with differential evolution...")
-            print("   This explores the entire search space to find a good starting point")
-            
-            stage1_result = differential_evolution(
-                self.objective_function,
-                bounds=opt_bounds,
-                maxiter=30,  # Fewer iterations for stage 1
-                popsize=8,   # Smaller population
-                atol=1e-3,
-                tol=1e-3,
-                seed=42,
-                workers=1,
-                updating='deferred',
-                disp=True
-            )
-            
-            stage1_position = stage1_result.x
-            stage1_cost = stage1_result.fun
-            
-            print(f"\n✓ Stage 1 complete!")
-            print(f"   Best position found: [{stage1_position[0]:.4f}, {stage1_position[1]:.4f}, {stage1_position[2]:.4f}]m")
-            print(f"   Cost: {stage1_cost:.6f}")
-            
-            print("\n🎯 Stage 2: Local refinement with Nelder-Mead...")
-            print("   This polishes the solution with fine-grained local search")
-            
-            stage2_result = minimize(
-                self.objective_function,
-                stage1_position,  # Start from Stage 1's best result
-                method='Nelder-Mead',
-                options={'maxiter': 50, 'disp': True, 'xatol': 1e-4, 'fatol': 1e-4}
-            )
-            
-            optimal_position = stage2_result.x
-            final_cost = stage2_result.fun
-            
-            print(f"\n✓ Stage 2 complete!")
-            print(f"   Refined position: [{optimal_position[0]:.4f}, {optimal_position[1]:.4f}, {optimal_position[2]:.4f}]m")
-            print(f"   Final cost: {final_cost:.6f}")
-            print(f"   Improvement from Stage 1: {((stage1_cost - final_cost) / stage1_cost * 100):.2f}%")
-            
-            # Use stage2_result as the final result
-            result = stage2_result
-            
-        elif method == 'circular':
-            # Circular search: optimize angle θ on a circle of fixed radius in XY plane (z=0)
-            print(f"   Searching on circle: radius = {circle_radius:.3f}m, z = 0")
-            print(f"   Position formula: x = {circle_radius:.3f} * cos(θ), y = {circle_radius:.3f} * sin(θ), z = 0")
-            
-            def circular_objective(theta):
-                """Objective function parameterized by angle θ (in radians)"""
-                # Convert angle to XYZ position on circle
-                position = np.array([
-                    circle_radius * np.cos(theta[0]),
-                    circle_radius * np.sin(theta[0]),
-                    0.0  # Fixed z = 0
-                ])
-                return self.objective_function(position)
-            
-            # Search angle from 0 to 2π
-            result = minimize(
-                circular_objective,
-                x0=np.array([0.0]),  # Start at θ=0 (position [r, 0, 0])
-                method='Nelder-Mead',
-                bounds=[(0, 2*np.pi)],
-                options={'maxiter': 50, 'disp': True}
-            )
-            
-            # Convert optimal angle back to position
-            optimal_theta = result.x[0]
-            optimal_position = np.array([
-                circle_radius * np.cos(optimal_theta),
-                circle_radius * np.sin(optimal_theta),
-                0.0
-            ])
-            final_cost = result.fun
-            
-            print(f"\n✓ Circular optimization complete!")
-            print(f"   Optimal angle: {optimal_theta:.4f} rad ({np.degrees(optimal_theta):.1f}°)")
-            print(f"   Optimal position: [{optimal_position[0]:.4f}, {optimal_position[1]:.4f}, {optimal_position[2]:.4f}]m")
-            print(f"   Distance from origin: {circle_radius:.4f}m (fixed)")
-            
-        else:  # nelder-mead or other local methods
-            # Start from center of bounds
-            x0 = np.array([
-                (self.bounds[0] + self.bounds[1]) / 2,
-                (self.bounds[2] + self.bounds[3]) / 2,
-                (self.bounds[4] + self.bounds[5]) / 2,
-            ])
-            
-            result = minimize(
-                self.objective_function,
-                x0,
-                method='Nelder-Mead',
-                options={'maxiter': 100, 'disp': True}
-            )
-            
-            optimal_position = result.x
-            final_cost = result.fun
-        
-        print(f"\n✓ Optimization completed!")
-        print(f"   Total evaluations: {self.eval_count}")
-        print(f"   Optimal position: [{optimal_position[0]:.4f}, {optimal_position[1]:.4f}, {optimal_position[2]:.4f}]m")
-        print(f"   Final cost (MSE): {final_cost:.6f}")
-        
-        # Evaluate at origin for comparison
-        print(f"\n   Computing cost at segment origin for comparison...")
-        origin_cost = self.objective_function(np.array([0.0, 0.0, 0.0]))
-        improvement = ((origin_cost - final_cost) / origin_cost) * 100
-        
-        print(f"   Cost at origin: {origin_cost:.6f}")
-        print(f"   Improvement: {improvement:.2f}%")
-        
-        return {
-            'success': result.success if hasattr(result, 'success') else True,
-            'optimal_position': optimal_position,
-            'final_cost': final_cost,
-            'origin_cost': origin_cost,
-            'improvement_percent': improvement,
-            'evaluations': self.eval_count,
-            'optimization_result': result
-        }
-
-
-def create_visualizations(optimizer, optimization_result, output_dir):
-    """Create visualization plots"""
-    print("\n🔄 Creating visualizations...")
-    
-    optimal_position = optimization_result['optimal_position']
-    
-    # Generate data at optimal position and at origin for comparison
-    print("   Generating comparison data...")
-    
-    # At optimal position
-    sim_acc_opt, sim_times_opt, _ = generate_simulated_imu_data_at_position(
-        optimizer.model_file,
-        optimizer.motion_file,
-        optimizer.segment_name,
-        "imu_optimal",
-        optimal_position,
-        optimizer.orientation_matrix,
-        optimizer.max_frames
-    )
-    
-    # At origin
-    sim_acc_origin, sim_times_origin, _ = generate_simulated_imu_data_at_position(
-        optimizer.model_file,
-        optimizer.motion_file,
-        optimizer.segment_name,
-        "imu_origin",
-        np.array([0.0, 0.0, 0.0]),
-        optimizer.orientation_matrix,
-        optimizer.max_frames
-    )
-    
-    # Align all time series
-    sim_opt_aligned, real_aligned, common_times, _ = align_time_series(
-        sim_times_opt, sim_acc_opt, optimizer.real_times, optimizer.real_acc_signals
-    )
-    
-    sim_origin_aligned, _, _, _ = align_time_series(
-        sim_times_origin, sim_acc_origin, optimizer.real_times, optimizer.real_acc_signals
-    )
-    
-    # Create comprehensive visualization
-    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
-    colors = ["red", "green", "blue"]
-    labels = ["X", "Y", "Z"]
-    
-    # Plot individual axes comparison
-    for i in range(3):
-        # At origin
-        axes[i, 0].plot(
-            common_times,
-            sim_origin_aligned[:, i],
-            color=colors[i],
-            linewidth=1.5,
-            alpha=0.7,
-            label=f"Simulated {labels[i]} (Origin)",
-        )
-        axes[i, 0].plot(
-            common_times,
-            real_aligned[:, i],
-            color=colors[i],
-            linewidth=1.5,
-            alpha=0.9,
-            linestyle="--",
-            label=f"Real IMU {labels[i]}",
-        )
-        
-        axes[i, 0].set_ylabel(f"Acceleration {labels[i]} (m/s²)")
-        axes[i, 0].set_title(f"At Segment Origin - Axis {labels[i]}")
-        axes[i, 0].legend()
-        axes[i, 0].grid(True, alpha=0.3)
-        
-        # At optimal position
-        axes[i, 1].plot(
-            common_times,
-            sim_opt_aligned[:, i],
-            color=colors[i],
-            linewidth=1.5,
-            alpha=0.7,
-            label=f"Simulated {labels[i]} (Optimal)",
-        )
-        axes[i, 1].plot(
-            common_times,
-            real_aligned[:, i],
-            color=colors[i],
-            linewidth=1.5,
-            alpha=0.9,
-            linestyle="--",
-            label=f"Real IMU {labels[i]}",
-        )
-        
-        axes[i, 1].set_ylabel(f"Acceleration {labels[i]} (m/s²)")
-        axes[i, 1].set_title(f"At Optimal Position - Axis {labels[i]}")
-        axes[i, 1].legend()
-        axes[i, 1].grid(True, alpha=0.3)
-    
-    axes[-1, 0].set_xlabel("Time (s)")
-    axes[-1, 1].set_xlabel("Time (s)")
-    
-    plt.tight_layout()
-    comparison_plot_path = Path(output_dir) / "position_optimization_comparison.png"
-    plt.savefig(comparison_plot_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"✓ Saved comparison plot: {comparison_plot_path}")
-    
-    # Create summary plot
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # Magnitude comparison
-    sim_magnitude_origin = np.linalg.norm(sim_origin_aligned, axis=1)
-    sim_magnitude_opt = np.linalg.norm(sim_opt_aligned, axis=1)
-    real_magnitude = np.linalg.norm(real_aligned, axis=1)
-    
-    ax1.plot(
-        common_times,
-        sim_magnitude_origin,
-        "b-",
-        linewidth=2,
-        alpha=0.7,
-        label="Simulated (Origin)",
-    )
-    ax1.plot(
-        common_times,
-        sim_magnitude_opt,
-        "r-",
-        linewidth=2,
-        alpha=0.7,
-        label="Simulated (Optimal Position)",
-    )
-    ax1.plot(
-        common_times, real_magnitude, "k--", linewidth=2, alpha=0.9, label="Real IMU"
-    )
-    ax1.set_xlabel("Time (s)")
-    ax1.set_ylabel("Acceleration Magnitude (m/s²)")
-    ax1.set_title("Magnitude Comparison")
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    
-    # Cost comparison bar chart
-    costs = [optimization_result['origin_cost'], optimization_result['final_cost']]
-    methods = ["At Segment\nOrigin", "At Optimal\nPosition"]
-    colors_bar = ["lightcoral", "lightgreen"]
-    
-    bars = ax2.bar(methods, costs, color=colors_bar, alpha=0.7)
-    ax2.set_ylabel("Mean Squared Error (m²/s⁴)")
-    ax2.set_title(
-        f'Position Optimization Results\n{optimization_result["improvement_percent"]:.1f}% Improvement'
-    )
-    ax2.grid(True, alpha=0.3, axis="y")
-    
-    # Add value labels on bars
-    for bar, cost in zip(bars, costs):
-        height = bar.get_height()
-        ax2.text(
-            bar.get_x() + bar.get_width() / 2.0,
-            height + height * 0.01,
-            f"{cost:.6f}",
-            ha="center",
-            va="bottom",
-            fontweight="bold",
-        )
-    
-    plt.tight_layout()
-    summary_plot_path = Path(output_dir) / "position_optimization_summary.png"
-    plt.savefig(summary_plot_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"✓ Saved summary plot: {summary_plot_path}")
-    
-    # Create 3D visualization of position
-    fig = plt.figure(figsize=(10, 10))
-    ax = fig.add_subplot(111, projection="3d")
-    
-    # Plot segment coordinate frame axes
-    origin = np.zeros(3)
-    axes_length = 0.1  # 10cm axes
-    
-    ax.quiver(0, 0, 0, axes_length, 0, 0, color='r', arrow_length_ratio=0.2, linewidth=2, label='X (segment)')
-    ax.quiver(0, 0, 0, 0, axes_length, 0, color='g', arrow_length_ratio=0.2, linewidth=2, label='Y (segment)')
-    ax.quiver(0, 0, 0, 0, 0, axes_length, color='b', arrow_length_ratio=0.2, linewidth=2, label='Z (segment)')
-    
-    # Plot optimal IMU position
-    ax.scatter(
-        optimal_position[0], optimal_position[1], optimal_position[2],
-        color='purple', s=200, marker='o', label='Optimal IMU Position', alpha=0.8
-    )
-    
-    # Draw line from origin to optimal position
-    ax.plot(
-        [0, optimal_position[0]], 
-        [0, optimal_position[1]], 
-        [0, optimal_position[2]],
-        'k--', linewidth=1.5, alpha=0.5
-    )
-    
-    # Add text label with coordinates
-    ax.text(
-        optimal_position[0], optimal_position[1], optimal_position[2],
-        f'  ({optimal_position[0]:.3f}, {optimal_position[1]:.3f}, {optimal_position[2]:.3f})m',
-        fontsize=10
-    )
-    
-    # Set equal aspect ratio and labels
-    max_range = max(
-        abs(optimizer.bounds[1] - optimizer.bounds[0]),
-        abs(optimizer.bounds[3] - optimizer.bounds[2]),
-        abs(optimizer.bounds[5] - optimizer.bounds[4])
-    ) / 2
-    
-    mid_x = (optimizer.bounds[0] + optimizer.bounds[1]) / 2
-    mid_y = (optimizer.bounds[2] + optimizer.bounds[3]) / 2
-    mid_z = (optimizer.bounds[4] + optimizer.bounds[5]) / 2
-    
-    ax.set_xlim([mid_x - max_range, mid_x + max_range])
-    ax.set_ylim([mid_y - max_range, mid_y + max_range])
-    ax.set_zlim([mid_z - max_range, mid_z + max_range])
-    
-    ax.set_xlabel("X (m)")
-    ax.set_ylabel("Y (m)")
-    ax.set_zlabel("Z (m)")
-    ax.set_title(f"Optimal IMU Position on {optimizer.segment_name}")
-    ax.legend()
-    
-    plt.tight_layout()
-    position_plot_path = Path(output_dir) / "optimal_position_3d.png"
-    plt.savefig(position_plot_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"✓ Saved 3D position plot: {position_plot_path}")
-
-
-def save_results(optimization_result, model_file, motion_file, real_imu_file,
-                segment_name, orientation_file, output_dir):
-    """Save optimization results to files"""
-    print("\n💾 Saving results...")
-    
-    # Save detailed results as JSON
-    results_data = {
-        "configuration": {
-            "model_file": str(model_file),
-            "motion_file": str(motion_file),
-            "real_imu_file": str(real_imu_file),
-            "segment_name": segment_name,
-            "orientation_file": str(orientation_file)
-        },
-        "optimization": {
-            "optimal_position": optimization_result['optimal_position'].tolist(),
-            "final_cost": float(optimization_result['final_cost']),
-            "origin_cost": float(optimization_result['origin_cost']),
-            "improvement_percent": float(optimization_result['improvement_percent']),
-            "success": bool(optimization_result['success']),
-            "evaluations": int(optimization_result['evaluations'])
-        }
-    }
-    
-    results_path = Path(output_dir) / "position_optimization_results.json"
-    with open(results_path, "w") as f:
-        json.dump(results_data, f, indent=2)
-    
-    print(f"✓ Saved results: {results_path}")
-    
-    # Save position vector
-    position_path = Path(output_dir) / "optimal_position.txt"
-    np.savetxt(
-        position_path,
-        optimization_result['optimal_position'].reshape(1, -1),
-        header="Optimal IMU position offset [x, y, z] in segment frame (meters)",
-        fmt='%.6f'
-    )
-    
-    print(f"✓ Saved position vector: {position_path}")
-
-
-def find_dataset_files(dataset_root, subject, condition, trial):
-    """Find the required files in the Final dataset structure"""
-    dataset_path = Path(dataset_root)
-    
-    # Find model file
-    model_file = dataset_path / subject / "opensim" / f"{subject}.osim"
-    if not model_file.exists():
-        print(f"❌ Model file not found: {model_file}")
-        return None, None, None
-    
-    # Find motion file
-    motion_file = dataset_path / subject / condition / trial / "opensim" / "motion.sto"
-    if not motion_file.exists():
-        print(f"❌ Motion file not found: {motion_file}")
-        return None, None, None
-    
-    # Find IMU data file
-    imu_file = dataset_path / subject / condition / trial / "Input" / "imu_data.csv"
-    if not imu_file.exists():
-        print(f"❌ IMU data file not found: {imu_file}")
-        return None, None, None
-    
-    return model_file, motion_file, imu_file
-
-
-def load_orientation_results(orientation_file):
-    """Load orientation optimization results from JSON file"""
-    print(f"\n📂 Loading orientation results from {orientation_file}...")
-    
-    try:
-        with open(orientation_file, 'r') as f:
-            data = json.load(f)
-        
-        # Extract rotation matrix
-        rotation_matrix = np.array(data['optimization']['optimal_rotation_matrix'])
-        
-        print(f"✓ Loaded orientation matrix:")
-        print(rotation_matrix)
-        
-        return rotation_matrix, True
-        
-    except Exception as e:
-        print(f"❌ Error loading orientation results: {e}")
-        return None, False
-
-
-def main():
-    """Main function with command line argument parsing"""
-    parser = argparse.ArgumentParser(description="IMU Position Optimization for Final Dataset")
-    parser.add_argument(
-        "--dataset-root", required=True, 
-        help="Path to Final dataset root (e.g., /path/to/Final/Camargo)"
-    )
-    parser.add_argument("--subject", required=True, help="Subject ID (e.g., AB21)")
-    parser.add_argument("--condition", required=True, help="Condition (e.g., treadmill)")
-    parser.add_argument("--trial", required=True, help="Trial name (e.g., treadmill_03_01)")
-    parser.add_argument("--segment", required=True, 
-                       help="Body segment (e.g., femur_r, tibia_r, pelvis)")
-    parser.add_argument(
-        "--orientation-results", required=True,
-        help="Path to orientation optimization results JSON file"
-    )
-    parser.add_argument("--output", required=True, help="Output directory for results")
-    parser.add_argument(
-        "--imu-data-name", default=None,
-        help="Name of IMU data columns (default: inferred from segment)"
-    )
-    parser.add_argument(
-        "--max-frames", type=int, default=1000,
-        help="Maximum frames to process (default: 1000, lower for position opt)"
-    )
-    parser.add_argument(
-        "--optimization-method", default="two-stage",
-        choices=["differential_evolution", "nelder-mead", "two-stage", "circular"],
-        help="Optimization method (default: two-stage). "
-             "Options: differential_evolution (global), nelder-mead (local), "
-             "two-stage (global+local refinement - recommended), "
-             "circular (search on 4cm radius circle in XY plane - fast)"
-    )
-    parser.add_argument(
-        "--circle-radius", type=float, default=0.04,
-        help="Radius in meters for circular search method (default: 0.04 = 4cm)"
-    )
-    
-    args = parser.parse_args()
-    
-    # Create output directory
-    Path(args.output).mkdir(exist_ok=True, parents=True)
-    
-    # Infer IMU data name from segment if not provided
-    segment_to_imu_data = {
-        "femur_r": "thigh_r",
-        "femur_l": "thigh_l",
-        "tibia_r": "shank_r",
-        "tibia_l": "shank_l",
-        "pelvis": "pelvis"
-    }
-    
-    imu_data_name = args.imu_data_name if args.imu_data_name else segment_to_imu_data.get(args.segment, args.segment)
-    
-    print("🚀 IMU Position Optimization for Final Dataset")
-    print("=" * 70)
-    print(f"Dataset: {args.dataset_root}")
-    print(f"Subject: {args.subject}")
-    print(f"Condition: {args.condition}")
-    print(f"Trial: {args.trial}")
-    print(f"Segment: {args.segment}")
-    print(f"IMU data name: {imu_data_name}")
-    print(f"Output: {args.output}")
-    print(f"Orientation file: {args.orientation_results}")
-    print("=" * 70)
-    
-    try:
-        # Step 1: Find dataset files
-        model_file, motion_file, real_imu_file = find_dataset_files(
-            args.dataset_root, args.subject, args.condition, args.trial
-        )
-        
-        if model_file is None:
-            sys.exit(1)
-        
-        print(f"Model: {model_file}")
-        print(f"Motion: {motion_file}")
-        print(f"Real IMU: {real_imu_file}")
-        
-        # Step 2: Load orientation results
-        orientation_matrix, success = load_orientation_results(args.orientation_results)
-        if not success:
-            sys.exit(1)
-        
-        # Step 3: Get segment bounds from model
-        geometry_path = Path("/Applications/OpenSim 4.5/Geometry")
-        osim.ModelVisualizer.addDirToGeometrySearchPaths(str(geometry_path))
         model = osim.Model(str(model_file))
         model.setUseVisualizer(False)
         
-        bounds = get_segment_bounds(model, args.segment)
-        del model
+        if not model.getBodySet().contains(segment):
+            print(f"❌ Segment '{segment}' not found in model")
+            return None, None, None, False
         
-        # Step 4: Create optimizer and run optimization
-        optimizer = PositionOptimizer(
-            model_file=str(model_file),
-            motion_file=str(motion_file),
-            real_imu_file=str(real_imu_file),
-            segment_name=args.segment,
-            imu_data_name=imu_data_name,
-            orientation_matrix=orientation_matrix,
-            bounds=bounds,
-            max_frames=args.max_frames
-        )
+        body = model.getBodySet().get(segment)
         
-        optimization_result = optimizer.optimize(
-            method=args.optimization_method,
-            circle_radius=args.circle_radius
-        )
+        # Create IMU
+        imu = osim.IMU()
+        imu.setName(imu_name)
         
-        if not optimization_result['success']:
-            print("❌ Optimization failed")
-            sys.exit(1)
+        # Create PhysicalOffsetFrame with position and orientation
+        frame = osim.PhysicalOffsetFrame()
+        frame.setName(f"{imu_name}_frame")
+        frame.setParentFrame(body)
         
-        # Step 5: Create visualizations
-        create_visualizations(optimizer, optimization_result, args.output)
+        # Set position (translation)
+        translation = osim.Vec3(position[0], position[1], position[2])
         
-        # Step 6: Save results
-        save_results(
-            optimization_result,
-            model_file,
-            motion_file,
-            real_imu_file,
-            args.segment,
-            args.orientation_results,
-            args.output
-        )
+        # Convert rotation matrix to OpenSim rotation
+        # OpenSim uses rotation matrix in row-major order
+        rotation_osim = osim.Rotation()
+        for i in range(3):
+            for j in range(3):
+                rotation_osim.set(i, j, rotation_matrix[i, j])
         
-        print(f"\n🎉 IMU Position Optimization Completed Successfully!")
-        print(f"📊 Summary:")
-        print(f"   Optimal position: [{optimization_result['optimal_position'][0]:.4f}, "
-              f"{optimization_result['optimal_position'][1]:.4f}, "
-              f"{optimization_result['optimal_position'][2]:.4f}]m")
-        print(f"   MSE at origin: {optimization_result['origin_cost']:.6f}")
-        print(f"   MSE at optimal position: {optimization_result['final_cost']:.6f}")
-        print(f"   Improvement: {optimization_result['improvement_percent']:.2f}%")
-        print(f"   Results saved to: {args.output}")
+        # Create transform with position and rotation
+        transform = osim.Transform(rotation_osim, translation)
+        frame.setOffsetTransform(transform)
+        
+        body.addComponent(frame)
+        imu.connectSocket_frame(frame)
+        model.addComponent(imu)
+        
+        state = model.initSystem()
+        table = osim.TimeSeriesTable(str(motion_file))
+        tcol = table.getIndependentColumn()
+        names = list(table.getColumnLabels())
+        
+        accs, gyros, times = [], [], []
+        
+        for i in tqdm(range(min(max_frames, table.getNumRows())), desc="Simulating IMU"):
+            t = tcol[i]
+            state.setTime(t)
+            
+            # Set coordinate values and speeds
+            for c in model.getCoordinateSet():
+                q = c.getName()
+                u = q + "_u"
+                if q in names:
+                    c.setValue(state, table.getDependentColumn(q)[i])
+                if u in names:
+                    c.setSpeedValue(state, table.getDependentColumn(u)[i])
+            
+            model.realizeAcceleration(state)
+            
+            # Calculate IMU signals
+            a = imu.calcAccelerometerSignal(state)
+            g = imu.calcGyroscopeSignal(state)
+            
+            # Convert acceleration from mm/s² to m/s²
+            accs.append([a.get(j) / 1000.0 for j in range(3)])
+            gyros.append([g.get(j) for j in range(3)])
+            times.append(t)
+        
+        return np.array(accs), np.array(gyros), np.array(times), True
         
     except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        print(f"❌ Simulation failed: {e}")
+        return None, None, None, False
+
+
+# ---------------- Time Series Alignment ---------------- #
+def align_time_series(sim_t, sim_g, real_t, real_g, fs=200.0):
+    """Align simulated and real time series to common time grid."""
+    s0 = max(sim_t[0], real_t[0])
+    s1 = min(sim_t[-1], real_t[-1])
+    
+    if s0 >= s1:
+        return None, None, None, False
+    
+    dur = s1 - s0
+    n = int(min(max(dur * fs, 1500), 100000))
+    grid = np.linspace(s0, s1, n)
+    
+    # Interpolate to common time grid
+    S = interp1d(sim_t, sim_g, axis=0, bounds_error=False, fill_value="extrapolate")(grid)
+    R = interp1d(real_t, real_g, axis=0, bounds_error=False, fill_value="extrapolate")(grid)
+    
+    # Apply smoothing
+    S = butter_lowpass_zero_phase(S, cutoff_hz=6.0, fs_hz=fs, order=4)
+    R = butter_lowpass_zero_phase(R, cutoff_hz=6.0, fs_hz=fs, order=4)
+    
+    return S, R, grid, True
+
+
+# ---------------- Position Optimization ---------------- #
+def position_cost_function(position, rotation_matrix, model_file, motion_file, 
+                          segment, imu_name, real_accel, real_time, max_frames, cost_type='mse'):
+    """
+    Cost function for position optimization.
+    Returns cost between real and simulated accelerometer data.
+    """
+    try:
+        # Generate simulated data with current position
+        sim_accel, _, sim_time, success = generate_simulated_imu_data_with_position(
+            model_file, motion_file, segment, imu_name, 
+            rotation_matrix, position, max_frames
+        )
+        
+        if not success:
+            return 1e6  # Large cost for failed simulation
+        
+        # Align time series
+        S, R, _, aligned = align_time_series(sim_time, sim_accel, real_time, real_accel)
+        
+        if not aligned:
+            return 1e6  # Large cost for failed alignment
+        
+        if cost_type == 'mse':
+            # Calculate MSE
+            mse = np.mean((S - R) ** 2)
+            return mse
+        elif cost_type == 'correlation':
+            # Calculate negative correlation (we want to maximize correlation)
+            correlations = []
+            for i in range(3):
+                if np.std(S[:, i]) > 1e-6 and np.std(R[:, i]) > 1e-6:
+                    corr = np.corrcoef(S[:, i], R[:, i])[0, 1]
+                    if not np.isnan(corr):
+                        correlations.append(corr)
+            if len(correlations) == 0:
+                return 1e6
+            return -np.mean(correlations)  # Negative because we want to maximize
+        elif cost_type == 'weighted_mse':
+            # Weighted MSE with higher weight for Z-axis
+            weights = np.array([1.0, 1.0, 2.0])  # Higher weight for Z-axis
+            weighted_mse = np.mean(weights * (S - R) ** 2)
+            return weighted_mse
+        else:
+            return np.mean((S - R) ** 2)
+        
+    except Exception as e:
+        print(f"⚠️ Position optimization error: {e}")
+        return 1e6
+
+
+def get_segment_initial_position(segment):
+    """Get realistic initial position based on segment type."""
+    if segment in ['femur_r', 'femur_l']:
+        return [0.0, -0.3, 0.05]  # Mid-femur, 5cm outward
+    elif segment in ['tibia_r', 'tibia_l']:
+        return [0.0, -0.2, 0.05]  # Mid-tibia
+    elif segment == 'pelvis':
+        return [0.0, -0.1, 0.05]  # Pelvis is shorter
+    else:
+        return [0.0, -0.25, 0.05]  # Default
+
+
+def multi_start_optimization(rotation_matrix, model_file, motion_file, segment, 
+                            real_accel, real_time, max_frames, n_starts=5, cost_type='mse'):
+    """Try multiple random starting positions to avoid local minima."""
+    print(f"🎯 Multi-start optimization for {segment} ({n_starts} starts)")
+    
+    # Define bounds
+    bounds = [
+        (-0.2, 0.2),   # x: ±20cm (forward/backward)
+        (-0.5, 0.0),   # y: -50cm to 0cm (distal to proximal along segment)
+        (-0.1, 0.3),   # z: -10cm to +30cm (left/right, mostly positive for outward placement)
+    ]
+    
+    best_result = None
+    best_cost = float('inf')
+    imu_name = f"{segment}_imu"
+    
+    for i in range(n_starts):
+        print(f"  Start {i+1}/{n_starts}...")
+        
+        # Random initial position within bounds
+        initial_pos = [
+            np.random.uniform(bounds[0][0], bounds[0][1]),    # X
+            np.random.uniform(bounds[1][0], bounds[1][1]),    # Y  
+            np.random.uniform(bounds[2][0], bounds[2][1])     # Z
+        ]
+        
+        try:
+            result = minimize(
+                position_cost_function,
+                initial_pos,
+                args=(rotation_matrix, model_file, motion_file, segment, imu_name, 
+                      real_accel, real_time, max_frames, cost_type),
+                method='L-BFGS-B',
+                bounds=bounds,
+                options={'maxiter': 30, 'disp': False}
+            )
+            
+            if result.success and result.fun < best_cost:
+                best_cost = result.fun
+                best_result = result
+                print(f"    ✓ New best cost: {result.fun:.6f}")
+            else:
+                print(f"    - Cost: {result.fun:.6f}")
+                
+        except Exception as e:
+            print(f"    ❌ Start {i+1} failed: {e}")
+            continue
+    
+    if best_result is not None:
+        print(f"✓ Multi-start optimization successful")
+        print(f"  Best position: {best_result.x}")
+        print(f"  Best cost: {best_cost:.6f}")
+        return best_result.x, best_cost
+    else:
+        print(f"❌ All multi-start attempts failed")
+        # Fall back to default position
+        default_pos = get_segment_initial_position(segment)
+        return default_pos, 1e6
+
+
+def optimize_imu_position(rotation_matrix, model_file, motion_file, segment, 
+                         real_accel, real_time, max_frames, initial_position=None, 
+                         use_multi_start=True, cost_type='mse'):
+    """
+    Optimize IMU position using pre-determined orientation.
+    
+    Args:
+        rotation_matrix: 3x3 rotation matrix from orientation optimization
+        model_file: Path to OpenSim model
+        motion_file: Path to motion file
+        segment: Body segment name
+        real_accel: Real accelerometer data
+        real_time: Real time data
+        max_frames: Maximum frames to process
+        initial_position: Initial position guess [x, y, z] in meters
+        use_multi_start: Whether to use multi-start optimization
+        cost_type: Cost function type ('mse', 'correlation', 'weighted_mse')
+    
+    Returns:
+        optimal_position: Optimized 3D position
+        cost: Final cost value
+    """
+    if use_multi_start:
+        return multi_start_optimization(rotation_matrix, model_file, motion_file, 
+                                      segment, real_accel, real_time, max_frames, 
+                                      n_starts=5, cost_type=cost_type)
+    
+    # Single-start optimization (original method)
+    if initial_position is None:
+        initial_position = get_segment_initial_position(segment)
+    
+    imu_name = f"{segment}_imu"
+    
+    print(f"🎯 Single-start optimization for {segment}")
+    print(f"  Initial position: {initial_position}")
+    print(f"  Cost type: {cost_type}")
+    
+    # Define bounds for position optimization (in meters)
+    bounds = [
+        (-0.2, 0.2),   # x: ±20cm (forward/backward)
+        (-0.5, 0.0),   # y: -50cm to 0cm (distal to proximal along segment)
+        (-0.1, 0.3),   # z: -10cm to +30cm (left/right, mostly positive for outward placement)
+    ]
+    
+    # Optimize position
+    result = minimize(
+        position_cost_function,
+        initial_position,
+        args=(rotation_matrix, model_file, motion_file, segment, imu_name, 
+              real_accel, real_time, max_frames, cost_type),
+        method='L-BFGS-B',
+        bounds=bounds,
+        options={'maxiter': 50, 'disp': True}
+    )
+    
+    if result.success:
+        print(f"✓ Position optimization successful")
+        print(f"  Optimal position: {result.x}")
+        print(f"  Final cost: {result.fun:.6f}")
+    else:
+        print(f"❌ Position optimization failed: {result.message}")
+        result.x = initial_position  # Fall back to initial position
+    
+    return result.x, result.fun
+
+
+# ---------------- Visualization ---------------- #
+def create_position_visualizations(real_accel, sim_accel, time, segment, outdir, 
+                                 initial_position, optimal_position, cost):
+    """Create visualizations for position optimization results."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    
+    # Time series comparison
+    total = time[-1] - time[0]
+    if total > 22:
+        mid = 0.5 * (time[0] + time[-1])
+        t0, t1 = mid - 10, mid + 10
+    else:
+        t0, t1 = time[0], time[-1]
+    
+    s = np.argmin(np.abs(time - t0))
+    e = np.argmin(np.abs(time - t1))
+    tt = time[s:e]
+    
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10))
+    colors = ['red', 'green', 'blue']
+    labels = ['X', 'Y', 'Z']
+    
+    for i in range(3):
+        ax = axes[i]
+        ax.plot(tt, real_accel[s:e, i], color=colors[i], alpha=0.7, 
+                label='Real IMU', linewidth=2)
+        ax.plot(tt, sim_accel[s:e, i], color=colors[i], linestyle='--', alpha=0.9, 
+                label='Simulated IMU', linewidth=2)
+        ax.set_title(f'{labels[i]}-axis Accelerometer Data')
+        ax.set_ylabel('Linear Acceleration (m/s²)')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+    
+    axes[-1].set_xlabel('Time (s)')
+    plt.suptitle(f'IMU Position Optimization: {segment.upper()}\n'
+                f'Initial: {initial_position} → Optimal: {optimal_position}\n'
+                f'Final Cost: {cost:.6f}', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    p = outdir / f"position_comparison_{segment}.png"
+    plt.savefig(p, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"✓ Saved position comparison plot: {p}")
+    
+    # 3D position visualization
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Plot initial and optimal positions
+    ax.scatter(*initial_position, color='red', s=200, label='Initial Position', alpha=0.8)
+    ax.scatter(*optimal_position, color='green', s=200, label='Optimal Position', alpha=0.8)
+    
+    # Draw line between positions
+    ax.plot([initial_position[0], optimal_position[0]], 
+            [initial_position[1], optimal_position[1]], 
+            [initial_position[2], optimal_position[2]], 
+            'k--', alpha=0.5, linewidth=2)
+    
+    # Set equal aspect ratio
+    max_range = max(np.abs(optimal_position).max(), np.abs(initial_position).max()) * 1.2
+    ax.set_xlim([-max_range, max_range])
+    ax.set_ylim([-max_range, max_range])
+    ax.set_zlim([-max_range, max_range])
+    
+    ax.set_xlabel('X (Forward) [m]')
+    ax.set_ylabel('Y (Up) [m]')
+    ax.set_zlabel('Z (Right) [m]')
+    ax.set_title(f'IMU Position Optimization: {segment.upper()}\n'
+                f'Movement: {np.linalg.norm(np.array(optimal_position) - np.array(initial_position)):.3f}m')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    p = outdir / f"position_3d_{segment}.png"
+    plt.savefig(p, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"✓ Saved 3D position plot: {p}")
+
+
+# ---------------- Save Results ---------------- #
+def save_position_results(optimal_position, cost, initial_position, segment, outdir):
+    """Save position optimization results."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    
+    # Calculate position change
+    position_change = np.array(optimal_position) - np.array(initial_position)
+    distance_moved = np.linalg.norm(position_change)
+    
+    result = {
+        "segment": segment,
+        "initial_position": list(initial_position),
+        "optimal_position": list(optimal_position),
+        "position_change": position_change.tolist(),
+        "distance_moved_m": float(distance_moved),
+        "final_cost": float(cost),
+        "optimization_success": True
+    }
+    
+    with open(outdir / f"position_results_{segment}.json", "w") as f:
+        json.dump(result, f, indent=2)
+    
+    print(f"✓ Saved position results: {outdir}/position_results_{segment}.json")
+
+
+# ---------------- Main Processing ---------------- #
+def find_dataset_files(dataset_root, subject, condition, trial):
+    """Find required dataset files."""
+    root = Path(dataset_root)
+    model = root / subject / "opensim" / f"{subject}.osim"
+    motion = root / subject / condition / trial / "opensim" / "motion.sto"
+    imu = root / subject / condition / trial / "Input" / "imu_data.csv"
+    
+    if not (model.exists() and motion.exists() and imu.exists()):
+        print("❌ Missing dataset files.")
+        return None, None, None
+    return model, motion, imu
+
+
+def process_segment_position(args, segment, imu_csv, model_file, motion_file, orientation_results_dir):
+    """Process position optimization for a single segment."""
+    seg_out = Path(args.output) / f"{segment}_position"
+    seg_out.mkdir(parents=True, exist_ok=True)
+    
+    print(f"\n🎯 Processing position optimization for: {segment}")
+    
+    # Load orientation results
+    rotation_matrix = load_orientation_results(orientation_results_dir, segment)
+    if rotation_matrix is None:
+        return
+    
+    # Load real IMU data
+    real_accel, _, real_time, ok = load_real_imu_data_for_segment(imu_csv, segment)
+    if not ok:
+        return
+    
+    # Set initial position based on segment type
+    initial_position = get_segment_initial_position(segment)
+    
+    # Optimize position with user-specified options
+    if args.multi_start:
+        optimal_position, cost = multi_start_optimization(
+            rotation_matrix, model_file, motion_file, segment,
+            real_accel, real_time, args.max_frames, 
+            n_starts=args.n_starts, cost_type=args.cost_type
+        )
+    else:
+        optimal_position, cost = optimize_imu_position(
+            rotation_matrix, model_file, motion_file, segment,
+            real_accel, real_time, args.max_frames, initial_position,
+            use_multi_start=False, cost_type=args.cost_type
+        )
+    
+    # Generate final simulated data with optimal position
+    sim_accel, _, sim_time, success = generate_simulated_imu_data_with_position(
+        model_file, motion_file, segment, f"{segment}_imu",
+        rotation_matrix, optimal_position, args.max_frames
+    )
+    
+    if success:
+        # Align time series for visualization
+        S, R, t, aligned = align_time_series(sim_time, sim_accel, real_time, real_accel)
+        if aligned:
+            create_position_visualizations(R, S, t, segment, seg_out, 
+                                         initial_position, optimal_position, cost)
+    
+    # Save results
+    save_position_results(optimal_position, cost, initial_position, segment, seg_out)
+    print(f"✓ Completed position optimization for {segment}")
+
+
+# ---------------- CLI ---------------- #
+def main():
+    parser = argparse.ArgumentParser(description="IMU Position Optimization")
+    parser.add_argument("--dataset-root", required=True, help="Path to dataset root")
+    parser.add_argument("--subject", required=True, help="Subject ID")
+    parser.add_argument("--condition", required=True, help="Condition name")
+    parser.add_argument("--trial", required=True, help="Trial name")
+    parser.add_argument("--segments", default="femur_r", help="Comma-separated segments or 'all'")
+    parser.add_argument("--output", required=True, help="Output directory")
+    parser.add_argument("--orientation-results", required=True, help="Path to orientation optimization results")
+    parser.add_argument("--max-frames", type=int, default=2000, help="Maximum frames to process")
+    parser.add_argument("--cost-type", default="correlation", choices=["mse", "correlation", "weighted_mse"], 
+                       help="Cost function type for optimization")
+    parser.add_argument("--multi-start", action="store_true", default=True, 
+                       help="Use multi-start optimization (default: True)")
+    parser.add_argument("--n-starts", type=int, default=5, 
+                       help="Number of random starts for multi-start optimization")
+    
+    args = parser.parse_args()
+    
+    # Find dataset files
+    model_file, motion_file, imu_csv = find_dataset_files(
+        args.dataset_root, args.subject, args.condition, args.trial
+    )
+    if model_file is None:
+        return
+    
+    # Determine segments to process
+    if args.segments.lower() == "all":
+        # Try to detect available segments
+        try:
+            df = pd.read_csv(imu_csv)
+            available_segments = []
+            for seg in ["pelvis", "femur_r", "femur_l", "tibia_r", "tibia_l"]:
+                if any(f"{seg}_gyro_" in col.lower() for col in df.columns):
+                    available_segments.append(seg)
+            segments = available_segments
+        except:
+            segments = ["femur_r"]  # Default fallback
+    else:
+        segments = [s.strip() for s in args.segments.split(",")]
+    
+    if not segments:
+        print("❌ No valid segments found.")
+        return
+    
+    print(f"🎯 Processing segments: {segments}")
+    
+    # Process each segment
+    for segment in segments:
+        process_segment_position(args, segment, imu_csv, model_file, motion_file, 
+                                args.orientation_results)
 
 
 if __name__ == "__main__":
     main()
-
