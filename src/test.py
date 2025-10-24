@@ -227,6 +227,11 @@ def predict_on_trial(
         input_data = input_data[::2]
         print(f"Downsampled input: {original_input_size} -> {input_data.shape[0]} samples")
     
+    # Apply temporary sign flip for Canonical_MeMo dataset
+    if dataset_type == 'memo':
+        print(f"Applying temporary sign flip for {dataset_type} dataset...")
+        input_data = -input_data
+    
     # Normalize input data if requested
     if normalize:
         input_data = (input_data - input_mean) / input_std
