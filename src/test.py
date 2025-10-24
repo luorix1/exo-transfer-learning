@@ -104,6 +104,7 @@ def predict_on_trial(
     Note: This function manually loads and processes trial data for visualization purposes.
     It replicates the same preprocessing pipeline as the DataHandler/LoadData classes:
     - Extracts gyro data based on imu_segments configuration
+    - Applies downsampling for high-rate datasets (matching dataloader)
     - Normalizes using training statistics (if normalize=True)
     - Applies low-pass filtering to labels (matching label_filter_hz from training)
     - Creates sliding windows for prediction
@@ -126,16 +127,21 @@ def predict_on_trial(
         imu_df = pd.read_csv(imu_path, sep=",", on_bad_lines="skip")
         label_df = pd.read_csv(label_path, sep=",", on_bad_lines="skip")
 
-    # Extract gyroscope data based on configured IMU segments
+    # Extract gyroscope data based on configured IMU segments (matching dataloader)
     gyro_cols = [col for col in imu_df.columns if "gyro" in col.lower()]
 
     # Configure based on imu_segments parameter
     if len(imu_segments) == 1 and imu_segments[0].lower() in ["femur", "thigh"]:
-        # Single femur/thigh IMU mode (3 channels)
+        # Single femur/thigh IMU mode (3 channels) - but still need to handle left/right stacking
         thigh_r_gyro = [
             col
             for col in gyro_cols
             if "thigh_r" in col.lower() or "femur_r" in col.lower()
+        ]
+        thigh_l_gyro = [
+            col
+            for col in gyro_cols
+            if "thigh_l" in col.lower() or "femur_l" in col.lower()
         ]
 
         if not thigh_r_gyro or len(thigh_r_gyro) < 3:
@@ -143,8 +149,23 @@ def predict_on_trial(
             print(f"  Available gyro columns: {gyro_cols}")
             return None, None, None
 
-        input_cols = thigh_r_gyro[:3]
-        input_data = imu_df[input_cols].values
+        # Process right side data
+        input_data_r = imu_df[thigh_r_gyro[:3]].values
+        
+        # Process left side data if available
+        input_data_l = None
+        if thigh_l_gyro and len(thigh_l_gyro) >= 3:
+            input_data_l = imu_df[thigh_l_gyro[:3]].values
+        
+        # Stack left and right data (matching dataloader logic)
+        if input_data_l is not None and len(input_data_l) > 0:
+            # Randomly choose order (matching dataloader)
+            if np.random.randint(0, 2):
+                input_data = np.vstack((input_data_r, input_data_l))
+            else:
+                input_data = np.vstack((input_data_l, input_data_r))
+        else:
+            input_data = input_data_r
 
     elif len(imu_segments) == 2:
         # Dual IMU mode
@@ -156,6 +177,11 @@ def predict_on_trial(
             col
             for col in gyro_cols
             if "thigh_r" in col.lower() or "femur_r" in col.lower()
+        ]
+        thigh_l_gyro = [
+            col
+            for col in gyro_cols
+            if "thigh_l" in col.lower() or "femur_l" in col.lower()
         ]
 
         if "pelvis" in [seg1, seg2] and (
@@ -170,8 +196,23 @@ def predict_on_trial(
                 print(f"  Available gyro columns: {gyro_cols}")
                 return None, None, None
 
-            input_cols = pelvis_gyro[:3] + thigh_r_gyro[:3]
-            input_data = imu_df[input_cols].values
+            # Process right side data (pelvis + thigh_r)
+            input_data_r = imu_df[pelvis_gyro[:3] + thigh_r_gyro[:3]].values
+            
+            # Process left side data if available (pelvis + thigh_l)
+            input_data_l = None
+            if thigh_l_gyro and len(thigh_l_gyro) >= 3:
+                input_data_l = imu_df[pelvis_gyro[:3] + thigh_l_gyro[:3]].values
+            
+            # Stack left and right data (matching dataloader logic)
+            if input_data_l is not None and len(input_data_l) > 0:
+                # Randomly choose order (matching dataloader)
+                if np.random.randint(0, 2):
+                    input_data = np.vstack((input_data_r, input_data_l))
+                else:
+                    input_data = np.vstack((input_data_l, input_data_r))
+            else:
+                input_data = input_data_r
         else:
             print(f"Unsupported IMU segment configuration: {imu_segments}")
             return None, None, None
@@ -179,6 +220,13 @@ def predict_on_trial(
         print(f"Invalid number of IMU segments: {len(imu_segments)}")
         return None, None, None
 
+    # Apply downsampling for high-rate datasets (matching dataloader logic)
+    if dataset_type in ['camargo', 'keaton', 'molinaro']:
+        print(f"Applying downsampling (::2) for {dataset_type} dataset...")
+        original_input_size = input_data.shape[0]
+        input_data = input_data[::2]
+        print(f"Downsampled input: {original_input_size} -> {input_data.shape[0]} samples")
+    
     # Normalize input data if requested
     if normalize:
         input_data = (input_data - input_mean) / input_std
@@ -213,23 +261,68 @@ def predict_on_trial(
     if predictions:
         predictions = np.concatenate(predictions, axis=0)
 
-    # Get corresponding true labels (unilateral: use right hip flexion moment)
-    # Look for hip_flexion_r_moment first
+    # Get corresponding true labels (matching dataloader: use both left and right)
+    # Look for hip_flexion_r_moment and hip_flexion_l_moment
     hip_flexion_r_col = [
         col for col in label_df.columns if "hip_flexion_r_moment" in col.lower()
     ]
+    hip_flexion_l_col = [
+        col for col in label_df.columns if "hip_flexion_l_moment" in col.lower()
+    ]
 
     true_labels = []
-    if hip_flexion_r_col:
-        true_data = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
-        # Apply the same low-pass filter as used in training
-        true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
-        # Get labels corresponding to the last time point of each window
-        # Make sure we don't go out of bounds
-        for i in range(num_windows):
-            label_idx = min(i + window_size - 1, len(true_data) - 1)
-            true_labels.append(true_data[label_idx])
-        true_labels = np.array(true_labels)
+    if hip_flexion_r_col or hip_flexion_l_col:
+        # Process right side data
+        true_data_r = None
+        if hip_flexion_r_col:
+            true_data_r = label_df[hip_flexion_r_col[0]].values.reshape(-1, 1)
+            
+            # Apply downsampling to labels if needed (matching dataloader)
+            if dataset_type in ['camargo', 'keaton', 'molinaro']:
+                true_data_r = true_data_r[::2]
+            elif dataset_type == 'memo':
+                # Apply sign flip for memo dataset (matching dataloader)
+                true_data_r = -true_data_r
+            
+            # Apply the same low-pass filter as used in training
+            true_data_r = butter_lowpass_zero_phase(true_data_r, cutoff_hz=label_filter_hz)
+        
+        # Process left side data
+        true_data_l = None
+        if hip_flexion_l_col:
+            true_data_l = label_df[hip_flexion_l_col[0]].values.reshape(-1, 1)
+            
+            # Apply downsampling to labels if needed (matching dataloader)
+            if dataset_type in ['camargo', 'keaton', 'molinaro']:
+                true_data_l = true_data_l[::2]
+            elif dataset_type == 'memo':
+                # Apply sign flip for memo dataset (matching dataloader)
+                true_data_l = -true_data_l
+            
+            # Apply the same low-pass filter as used in training
+            true_data_l = butter_lowpass_zero_phase(true_data_l, cutoff_hz=label_filter_hz)
+        
+        # Stack left and right data (matching dataloader logic)
+        if true_data_r is not None and true_data_l is not None:
+            # Randomly choose order (matching dataloader)
+            if np.random.randint(0, 2):
+                true_data = np.vstack((true_data_r, true_data_l))
+            else:
+                true_data = np.vstack((true_data_l, true_data_r))
+        elif true_data_r is not None:
+            true_data = true_data_r
+        elif true_data_l is not None:
+            true_data = true_data_l
+        else:
+            true_data = None
+        
+        if true_data is not None:
+            # Get labels corresponding to the last time point of each window
+            # Make sure we don't go out of bounds
+            for i in range(num_windows):
+                label_idx = min(i + window_size - 1, len(true_data) - 1)
+                true_labels.append(true_data[label_idx])
+            true_labels = np.array(true_labels)
     else:
         # Fallback: try generic hip moment columns
         hip_moment_cols = [
@@ -238,26 +331,63 @@ def predict_on_trial(
             if "hip" in col.lower() and "moment" in col.lower()
         ]
         if hip_moment_cols:
-            # Use right hip moment for unilateral model
+            # Look for both right and left hip moments
             hip_r_col = [
                 col
                 for col in hip_moment_cols
                 if "r" in col.lower() or "right" in col.lower()
             ]
+            hip_l_col = [
+                col
+                for col in hip_moment_cols
+                if "l" in col.lower() or "left" in col.lower()
+            ]
 
+            # Process right side data
+            true_data_r = None
             if hip_r_col:
-                true_data = label_df[hip_r_col[0]].values.reshape(-1, 1)
+                true_data_r = label_df[hip_r_col[0]].values.reshape(-1, 1)
+                
+                # Apply downsampling to labels if needed (matching dataloader)
+                if dataset_type in ['camargo', 'keaton', 'molinaro']:
+                    true_data_r = true_data_r[::2]
+                elif dataset_type == 'memo':
+                    # Apply sign flip for memo dataset (matching dataloader)
+                    true_data_r = -true_data_r
+                
                 # Apply the same low-pass filter as used in training
-                true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
-                for i in range(num_windows):
-                    label_idx = min(i + window_size - 1, len(true_data) - 1)
-                    true_labels.append(true_data[label_idx])
-                true_labels = np.array(true_labels)
-            elif len(hip_moment_cols) == 1:
-                # Fallback: use single moment column
-                true_data = label_df[hip_moment_cols[0]].values.reshape(-1, 1)
+                true_data_r = butter_lowpass_zero_phase(true_data_r, cutoff_hz=label_filter_hz)
+            
+            # Process left side data
+            true_data_l = None
+            if hip_l_col:
+                true_data_l = label_df[hip_l_col[0]].values.reshape(-1, 1)
+                
+                # Apply downsampling to labels if needed (matching dataloader)
+                if dataset_type in ['camargo', 'keaton', 'molinaro']:
+                    true_data_l = true_data_l[::2]
+                elif dataset_type == 'memo':
+                    # Apply sign flip for memo dataset (matching dataloader)
+                    true_data_l = -true_data_l
+                
                 # Apply the same low-pass filter as used in training
-                true_data = butter_lowpass_zero_phase(true_data, cutoff_hz=label_filter_hz)
+                true_data_l = butter_lowpass_zero_phase(true_data_l, cutoff_hz=label_filter_hz)
+            
+            # Stack left and right data (matching dataloader logic)
+            if true_data_r is not None and true_data_l is not None:
+                # Randomly choose order (matching dataloader)
+                if np.random.randint(0, 2):
+                    true_data = np.vstack((true_data_r, true_data_l))
+                else:
+                    true_data = np.vstack((true_data_l, true_data_r))
+            elif true_data_r is not None:
+                true_data = true_data_r
+            elif true_data_l is not None:
+                true_data = true_data_l
+            else:
+                true_data = None
+            
+            if true_data is not None:
                 for i in range(num_windows):
                     label_idx = min(i + window_size - 1, len(true_data) - 1)
                     true_labels.append(true_data[label_idx])
