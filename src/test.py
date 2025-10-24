@@ -713,7 +713,7 @@ def evaluate_model(
 
     # Plot 2: Time series plots for sample trials
     # Use already computed predictions for time series plotting
-    num_sample_trials = min(3, len(trial_names))
+    num_sample_trials = min(10, len(trial_names))
     if num_sample_trials > 0:
         print(f"\nGenerating time series plots for {num_sample_trials} sample trials...")
         
