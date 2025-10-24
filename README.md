@@ -170,77 +170,123 @@ Canonical_Dataset/
     └── ...
 ```
 
-**Complete Workflow Example:**
+#### Batch IMU Optimization
+
+There are two batch optimization approaches:
+
+**Option 1: Single trial across multiple subjects**
+```bash
+python analysis/run_imu_analysis.py batch \
+  --dataset "/path/to/Final/Dataset" \
+  --output results/batch_analysis \
+  --condition treadmill \
+  --trial treadmill_01_01 \
+  --subjects AB06,AB07,AB08 \
+  --segments femur_r,tibia_r,pelvis \
+  --max-frames 2000
+```
+
+**Option 2: Multiple conditions/trials across subjects (recommended)**
+```bash
+python analysis/batch_imu_optimization.py \
+  --dataset-root "/path/to/Final/Dataset" \
+  --output-root results/batch_analysis \
+  --subjects AB06,AB07,AB08 \
+  --conditions treadmill,levelground \
+  --segments femur_r,tibia_r,pelvis \
+  --max-frames 2000 \
+  --max-trials-per-subject 5
+```
+
+**What batch optimization does:**
+1. Runs optimization for each subject/condition/trial combination
+2. Saves individual results per trial
+3. Collects all rotation matrices into `batch_results.json`
+4. Provides progress tracking and error handling
+
+#### Complete Workflow for Camargo Dataset
 
 ```bash
-# 1. Preprocess raw dataset
-python processing/preprocess_molinaro.py \
-  --input-root "/Volumes/Samsung_T5/raw_data/Molinaro" \
-  --output-root "/path/to/Final/Molinaro" \
-  --conditions levelground,ramp,stair
+# 1. Preprocess raw Camargo dataset
+python processing/preprocess_camargo.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Samples/Camargo" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo" \
+  --conditions treadmill,levelground,ramp,stair,static
 
 # 2. Generate OpenSim motion files (.sto)
-python processing/generate_sto_files_molinaro.py \
-  --input-root "/Volumes/Samsung_T5/raw_data/Molinaro" \
-  --output-root "/path/to/Final/Molinaro"
+python processing/generate_sto_files_camargo.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Samples/Camargo" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo"
 
-# 3. Optimize IMU orientations (select representative trial)
-python analysis/run_imu_analysis.py single \
-  --dataset "/path/to/Final/Molinaro" \
-  --subject AB17 \
-  --condition levelground \
-  --trial LG_C0p0_S0p8_UC_1 \
-  --output results/molinaro_analysis
+# 3. Complete workflow: batch optimization + canonical dataset creation
+python scripts/create_canonical_camargo.py \
+  --dataset-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Canonical_Camargo" \
+  --subjects AB06,AB07,AB08 \
+  --conditions treadmill \
+  --segments femur_r,tibia_r,pelvis
 
-# 4. Create canonical dataset
-python processing/transform_imu_to_opensim_frame.py \
-  --dataset-root "/path/to/Final/Molinaro" \
-  --output-root "/path/to/Canonical_Molinaro" \
-  --results-dir "results/molinaro_analysis/"
-
-# 5. Ready for training!
+# 4. Ready for training!
 python src/train.py \
-  --data_root "/path/to/Canonical_Molinaro" \
-  --train_subjects AB17 AB18 \
-  --test_subjects AB19
+  --data_root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Canonical_Camargo" \
+  --train_subjects AB06 AB07 AB08 \
+  --test_subjects AB23 AB24
 ```
 
-### 2. Legacy Canonical Frame Conversion
-
-Alternative single-trial canonical frame conversion (use IMU optimization pipeline above for full datasets):
-
-Convert real IMU angular velocity data to OpenSim canonical (segment-aligned) frames:
-
-```bash
-python processing/canonical_frame_converter.py \
-  --model "/path/to/model.osim" \
-  --motion "/path/to/walking_motion_states.sto" \
-  --imu "/path/to/real_imu.csv" \
-  --output canonical_output \
-  --max-frames 4000 \
-  --visualize \
-  --unilateral \
-  --unit deg
-```
+**What `create_canonical_camargo.py` does:**
+1. **Step 1**: Runs batch IMU optimization across all specified subjects/trials
+2. **Step 2**: Creates canonical dataset by copying structure and transforming IMU data
+3. **Step 3**: Copies OpenSim model files to each subject's `opensim/` directory
+4. **Step 4**: Saves optimization results to the output directory
 
 **Options:**
-- `--model`: Path to OpenSim model (.osim)
-- `--motion`: Path to motion file (.sto with states)
-- `--imu`: Path to real IMU CSV
-- `--output`: Output directory
-- `--segments`: Comma-separated segments (default: auto-detect)
-- `--max-frames`: Maximum frames to process (default: 2000)
-- `--visualize`: Plot alignment comparisons
-- `--unilateral`: Assume all IMU columns are right side
-- `--unit`: Unit of real IMU gyro (rad/deg, default: rad)
+- `--skip-optimization`: Skip optimization step, use existing results
+- `--results-dir`: Path to existing results directory (when skipping optimization)
+- `--dry-run`: Preview changes without modifying files
+- `--debug`: Enable debug mode for optimization
 
-### 3. MeMo Dataset Processing
+#### Gyro Data Alignment Verification
+
+Compare transformed IMU data with OpenSim simulation to verify alignment quality:
+
+```bash
+python scripts/compare_gyro_alignment.py \
+  --canonical-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Canonical_Camargo" \
+  --subject "AB06" \
+  --condition "treadmill" \
+  --trial "treadmill_01_01" \
+  --segment "femur_r" \
+  --output-dir "comparison_plots"
+```
+
+**What it does:**
+1. Loads canonical IMU data and OpenSim simulation data
+2. Creates time series alignment plots
+3. Generates 3D axes comparison visualizations
+4. Produces 2D projection plots from different viewing angles
+5. Calculates correlation coefficients for alignment assessment
+
+**Output Files:**
+- `gyro_alignment_{segment}.png` - Time series comparison
+- `axes_comparison_{segment}.png` - 3D axes visualization
+- `axes_projections_{segment}.png` - 2D projection plots
+
+
+### 2. MeMo Dataset Processing
 
 Process MeMo_processed dataset with coordinate frame transformation:
 
 ```bash
-python processing/process_memo.py \
+# Preprocess raw MeMo data
+python processing/preprocess_memo.py \
   --input-root "/path/to/MeMo_processed" \
+  --output-root "/path/to/Final/MeMo" \
+  --conditions 0mps,1p0mps \
+  --subjects AB01_Jimin,AB02_Rajiv
+
+# Canonicalize MeMo data (transform IMU frames)
+python processing/canonicalize_memo.py \
+  --input-root "/path/to/Final/MeMo" \
   --output-root "/path/to/Canonical_MeMo" \
   --conditions 0mps,1p0mps \
   --subjects AB01_Jimin,AB02_Rajiv
@@ -259,54 +305,80 @@ canonical_y (up)      =  memo_x (up stays up)
 canonical_z (right)   = -memo_y (flip left to right)
 ```
 
+**What preprocessing does:**
+1. Extracts only gyroscope columns from IMU data
+2. Standardizes column names to canonical format
+3. Converts units (deg → rad) if specified
+4. Renames `Header` → `time` columns for consistency
+5. Creates standardized output structure: `Subject/Condition/Trial/Input/imu_data.csv` and `Label/joint_moment.csv`
+
+**What canonicalization does:**
+1. Transforms gyroscope data from MeMo frame to OpenSim canonical frame
+2. Processes label files to extract only hip flexion moments
+3. Normalizes joint moments by body weight (N-mm/kg → Nm/kg)
+4. Applies sign corrections for left leg moments
+5. Saves transformed data as `joint_moment.csv`
+
 **Options:**
 - `--input-root`: Path to MeMo_processed directory
 - `--output-root`: Output directory for Canonical format
 - `--conditions`: Comma-separated conditions (e.g., `0mps,1p0mps,transient_15sec`)
 - `--subjects`: Comma-separated subjects to process (default: all subjects)
-- `--no-transform`: Skip coordinate frame transformation (keep original MeMo frame)
+- `--max-frames`: Maximum frames to process (default: 100000)
 
-**What it does:**
-1. Renames label files from `{subject}_{condition}_{trial}.csv` to `joint_moment.csv`
-2. Standardizes all column names to lowercase with underscores
-3. Transforms gyroscope data from MeMo frame to OpenSim canonical frame
-4. Maintains the existing Subject/Condition/Trial/Input,Label structure
-
-### 4. Dataset Preprocessing
+### 3. Dataset Preprocessing
 
 Convert raw datasets to standardized format with gyro-only columns (without canonical frame conversion):
 
 #### Molinaro Dataset
 
 ```bash
+# Preprocess raw Molinaro data
 python processing/preprocess_molinaro.py \
   --input-root "/Volumes/Samsung_T5/raw_data/Samples/Molinaro" \
   --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Molinaro_Phase1_Phase2" \
   --conditions levelground,ramp,stair \
   --unit rad \
   --max-frames 100000
+
+# Generate OpenSim motion files (.sto)
+python processing/generate_sto_files_molinaro.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Samples/Molinaro" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Molinaro_Phase1_Phase2"
 ```
 
 #### Keaton Dataset
 
 ```bash
+# Preprocess raw Keaton data
 python processing/preprocess_keaton.py \
   --input-root "/Volumes/Samsung_T5/raw_data/Keaton" \
   --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Keaton" \
   --conditions levelground,ramp,stair \
   --unit deg \
   --max-frames 100000
+
+# Generate OpenSim motion files (.sto)
+python processing/generate_sto_files_keaton.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Keaton" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Keaton"
 ```
 
 #### Camargo Dataset
 
 ```bash
+# Preprocess raw Camargo data
 python processing/preprocess_camargo.py \
   --input-root "/Volumes/Samsung_T5/raw_data/Samples/Camargo" \
   --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo" \
   --conditions treadmill,levelground,ramp,stair,static \
   --unit rad \
   --max-frames 100000
+
+# Generate OpenSim motion files (.sto)
+python processing/generate_sto_files_camargo.py \
+  --input-root "/Volumes/Samsung_T5/raw_data/Samples/Camargo" \
+  --output-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Camargo"
 ```
 
 **What preprocessing does:**
@@ -316,56 +388,8 @@ python processing/preprocess_camargo.py \
 4. Renames `Header` → `time` columns for consistency
 5. Creates standardized output structure: `Subject/Condition/Trial/Input/imu_data.csv` and `Label/joint_moment.csv`
 
-### 5. Batch Dataset Reformatting
 
-Convert raw datasets (Camargo, Keaton, etc.) to the standardized Canonical format:
-
-```bash
-python processing/batch_reformat.py \
-  --input-root "/path/to/raw_dataset" \
-  --output-root "/path/to/Canonical" \
-  --conditions levelground,treadmill \
-  --canonical \
-  --unilateral \
-  --unit deg \
-  --max-frames 4000 \
-  --normalize-moment
-```
-
-**Options:**
-- `--input-root`: Input dataset directory
-- `--output-root`: Output directory for reformatted data
-- `--conditions`: Comma-separated conditions to include
-- `--canonical`: Apply canonical frame conversion (requires model/motion files)
-- `--unilateral`: Treat as unilateral data (add _r suffixes)
-- `--unit`: IMU gyro unit (rad/deg)
-- `--max-frames`: Maximum frames for canonical conversion
-- `--normalize-moment`: Normalize joint moments by bodyweight (if SubjectInfo.csv exists)
-
-**Output Structure:**
-```
-Canonical/
-├── Subject1/
-│   ├── levelground/
-│   │   ├── trial_01/
-│   │   │   ├── Input/
-│   │   │   │   └── imu_data.csv
-│   │   │   └── Label/
-│   │   │       └── joint_moment.csv
-│   │   └── trial_02/
-│   │       └── ...
-│   └── treadmill/
-│       └── ...
-└── Subject2/
-    └── ...
-```
-
-**Data Format:**
-- **IMU columns**: `pelvis_gyro_{x,y,z}`, `{thigh,femur}_r_gyro_{x,y,z}`, etc.
-- **Label columns**: `hip_flexion_r_moment`, `knee_angle_r_moment`, etc.
-- All column names are lowercase with underscores
-
-## Visualization
+## Visualization & Analysis
 
 ### Right hip flexion vs right thigh gyro
 
@@ -400,6 +424,32 @@ python scripts/plot_canonical_right_hip_vs_thigh.py \
 ```
 
 The script saves a PNG in the current directory named like `plot_rhip_vs_rthigh_<subject>_<condition>_<trial>.png`.
+
+### Gyro Data Alignment Verification
+
+Compare transformed IMU data with OpenSim simulation to verify alignment quality:
+
+```bash
+python scripts/compare_gyro_alignment.py \
+  --canonical-root "/Users/luorix/Desktop/MetaMobility Lab (CMU)/data/Final/Canonical_Camargo" \
+  --subject "AB06" \
+  --condition "treadmill" \
+  --trial "treadmill_01_01" \
+  --segment "femur_r" \
+  --output-dir "comparison_plots"
+```
+
+**What it does:**
+1. Loads canonical IMU data and OpenSim simulation data
+2. Creates time series alignment plots
+3. Generates 3D axes comparison visualizations
+4. Produces 2D projection plots from different viewing angles
+5. Calculates correlation coefficients for alignment assessment
+
+**Output Files:**
+- `gyro_alignment_{segment}.png` - Time series comparison
+- `axes_comparison_{segment}.png` - 3D axes visualization
+- `axes_projections_{segment}.png` - 2D projection plots
 
 ## Model Training
 
@@ -714,22 +764,35 @@ The conda environment (`environment.yml`) includes:
 
 ```
 transfer-learning/
-├── processing/
-│   ├── opensim/              # Local OpenSim utilities package
-│   ├── canonical_frame_converter.py  # IMU canonical frame conversion
-│   ├── batch_reformat.py     # Dataset reformatting utility (Camargo, Keaton, etc.)
-│   └── process_memo.py       # MeMo dataset processor with frame transformation
-├── src/
+├── analysis/               # IMU orientation optimization
+│   ├── imu_orientation_optimization.py  # Core optimization algorithm
+│   ├── run_imu_analysis.py     # Single/batch analysis runner
+│   └── batch_imu_optimization.py  # Batch processing across subjects/trials
+├── processing/                # Data processing pipeline
+│   ├── opensim/               # Local OpenSim utilities package
+│   ├── preprocess_*.py        # Dataset-specific preprocessing (Camargo, Keaton, Molinaro, MeMo)
+│   ├── generate_sto_files_*.py # OpenSim motion file generation
+│   ├── canonicalize_*.py      # Dataset-specific canonicalization
+│   └── transform_imu_to_opensim_frame.py  # IMU data transformation
+├── scripts/                   # Utility and workflow scripts
+│   ├── create_canonical_camargo.py  # Complete Camargo workflow
+│   ├── compare_gyro_alignment.py   # Alignment verification
+│   └── plot_canonical_right_hip_vs_thigh.py  # Visualization
+├── src/                       # Model training and evaluation
 │   ├── config/
 │   │   └── hyperparameters.py  # Model hyperparameters
 │   ├── data/
 │   │   └── dataloader.py     # Data loading and preprocessing
 │   ├── model/
-│   │   └── tcn.py            # TCN model architecture
+│   │   ├── tcn.py            # TCN model architecture
+│   │   └── gmf.py            # GMF model architecture
 │   ├── loss.py               # Loss functions
 │   ├── trainer.py            # Training loop and utilities
-│   ├── train.py              # Training script
-│   └── test.py               # Testing script
+│   ├── gmf_trainer.py        # GMF training loop
+│   ├── train.py              # TCN training script
+│   ├── train_gmf.py          # GMF training script
+│   ├── test.py               # TCN testing script
+│   └── test_gmf.py           # GMF testing script
 ├── environment.yml           # Conda environment specification
 ├── setup_env.sh              # Environment setup script
 └── README.md                 # This file
