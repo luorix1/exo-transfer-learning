@@ -227,11 +227,6 @@ def predict_on_trial(
         input_data = input_data[::2]
         print(f"Downsampled input: {original_input_size} -> {input_data.shape[0]} samples")
     
-    # Apply temporary sign flip for Canonical_MeMo dataset
-    if dataset_type == 'memo':
-        print(f"Applying temporary sign flip for {dataset_type} dataset...")
-        input_data = -input_data
-    
     # Normalize input data if requested
     if normalize:
         input_data = (input_data - input_mean) / input_std
@@ -287,7 +282,7 @@ def predict_on_trial(
                 true_data_r = true_data_r[::2]
             elif dataset_type == 'memo':
                 # Apply sign flip for memo dataset (matching dataloader)
-                true_data_r = -true_data_r
+                true_data_r = true_data_r
             
             # Apply the same low-pass filter as used in training
             true_data_r = butter_lowpass_zero_phase(true_data_r, cutoff_hz=label_filter_hz)
@@ -322,6 +317,11 @@ def predict_on_trial(
             true_data = None
         
         if true_data is not None:
+            # Apply temporary sign flip for Canonical_MeMo dataset
+            if dataset_type == 'memo':
+                print(f"Applying temporary sign flip for {dataset_type} ground truth labels...")
+                true_data = -true_data
+            
             # Get labels corresponding to the last time point of each window
             # Make sure we don't go out of bounds
             for i in range(num_windows):
