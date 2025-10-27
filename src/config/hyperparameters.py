@@ -35,12 +35,12 @@ DEFAULT_GMF_CONFIG = {
     # Model architecture
     'input_size': 6,  # Auto-adjusted based on imu_segments: 3 for single, 6 for dual
     'output_size': 1,
-    'gmf_size': 16,  # Dimension of the generalized moment feature representation
-    'generator_hidden_size': 32,
-    'generator_hidden_layers': 5,
-    'estimator_hidden_size': 16,
-    'decoder_hidden_size': 32,
-    'decoder_hidden_layers': 5,
+    'gmf_size': 32,  # Dimension of the generalized moment feature representation
+    'generator_hidden_size': 64,
+    'generator_hidden_layers': 3,
+    'estimator_hidden_size': 64,
+    'decoder_hidden_size': 64,
+    'decoder_hidden_layers': 3,
 
     # Training parameters
     'epochs': 60,
