@@ -151,6 +151,21 @@ def main():
         decoder_hidden_layers=config['decoder_hidden_layers'],
         param_size=param_size,
     ).to(device)
+    
+    # Initialize model weights properly
+    def init_weights(m):
+        if isinstance(m, torch.nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
+        elif isinstance(m, torch.nn.GRU):
+            for name, param in m.named_parameters():
+                if 'weight' in name:
+                    torch.nn.init.xavier_uniform_(param)
+                elif 'bias' in name:
+                    torch.nn.init.zeros_(param)
+    
+    model.apply(init_weights)
 
     config['param_size'] = param_size
     with open(config_path, 'w') as f:

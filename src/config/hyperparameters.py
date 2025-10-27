@@ -45,7 +45,7 @@ DEFAULT_GMF_CONFIG = {
     # Training parameters
     'epochs': 60,
     'batch_size': 32,
-    'learning_rate': 1e-4,
+    'learning_rate': 1e-3,  # Increased learning rate
     'number_of_workers': 0,
     'validation_split': 0.1,
     'dataset_proportion': 1.0,
@@ -59,7 +59,7 @@ DEFAULT_GMF_CONFIG = {
 
     # Loss weights
     'gmf_loss_weight': 1.0,
-    'decoder_loss_weight': 1.0,
+    'decoder_loss_weight': 0.1,  # Reduced to prevent decoder from dominating
 
     # Wandb configuration
     'wandb_session_name': 'gmf_joint_moment_prediction',
