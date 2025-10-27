@@ -119,7 +119,8 @@ class GMFTrainer:
         # Compute losses for evaluation
         l1_val = self.criterion(gmf_estimated_eval, gmf_generated_eval).item()
         l2_val = self.criterion(decoded_from_generator_eval, targets).item()
-        total_loss = self.gmf_weight * l1_val + self.decoder_weight * l2_val
+        # Use L2 loss as primary loss since it directly measures reconstruction quality
+        total_loss = 0.1 * l1_val + 1.0 * l2_val
 
         # Training steps
         if train:
@@ -143,9 +144,16 @@ class GMFTrainer:
             # Add regularization to prevent identical outputs
             gmf_diff = torch.mean((gmf_estimated - gmf_generated) ** 2)
             l1_reg = l1 + 0.01 * gmf_diff  # Encourage some difference between generator and estimator
+            
+            # Also compute reconstruction loss for generator to ensure it learns meaningful representations
+            decoded_from_generated = self.model.decode(params, gmf_generated)
+            l2_generator = self.criterion(decoded_from_generated, targets)
+            
+            # Combined loss: alignment + reconstruction
+            combined_loss = 0.1 * l1_reg + 0.9 * l2_generator
 
             self.optimizer_ge.zero_grad()
-            l1_reg.backward()
+            combined_loss.backward()
             torch.nn.utils.clip_grad_norm_(
                 list(self.model.generator.parameters()) + list(self.model.estimator.parameters()),
                 max_norm=1.0,
@@ -158,7 +166,7 @@ class GMFTrainer:
                 for p in list(self.model.generator.parameters()) + list(self.model.estimator.parameters()):
                     if p.grad is not None:
                         total_grad_norm += p.grad.data.norm(2).item() ** 2
-                print(f"Step {self._debug_step}: L1 loss = {l1.item():.6f}, L1_reg = {l1_reg.item():.6f}, Grad norm = {total_grad_norm ** 0.5:.6f}")
+                print(f"Step {self._debug_step}: L1 = {l1.item():.6f}, L1_reg = {l1_reg.item():.6f}, L2_gen = {l2_generator.item():.6f}, Combined = {combined_loss.item():.6f}, Grad norm = {total_grad_norm ** 0.5:.6f}")
             if not hasattr(self, '_debug_step'):
                 self._debug_step = 0
             self._debug_step += 1

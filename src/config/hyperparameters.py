@@ -60,6 +60,7 @@ DEFAULT_GMF_CONFIG = {
     # Loss weights
     'gmf_loss_weight': 1.0,
     'decoder_loss_weight': 0.1,  # Reduced to prevent decoder from dominating
+    'warmup_epochs': 2,  # Start decoder training after 2 epochs
 
     # Wandb configuration
     'wandb_session_name': 'gmf_joint_moment_prediction',
