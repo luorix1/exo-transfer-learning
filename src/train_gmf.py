@@ -152,16 +152,27 @@ def main():
         param_size=param_size,
     ).to(device)
     
-    # Initialize model weights properly with smaller scale
+    # Initialize model weights with different strategies to prevent collapse
     def init_weights(m):
         if isinstance(m, torch.nn.Linear):
-            torch.nn.init.xavier_uniform_(m.weight, gain=0.1)  # Smaller gain
+            # Use different initialization for generator vs estimator
+            if 'generator' in str(m):
+                torch.nn.init.xavier_uniform_(m.weight, gain=0.5)  # Higher gain for generator
+            elif 'estimator' in str(m):
+                torch.nn.init.xavier_uniform_(m.weight, gain=0.3)  # Different gain for estimator
+            else:
+                torch.nn.init.xavier_uniform_(m.weight, gain=0.1)  # Default for decoder
             if m.bias is not None:
                 torch.nn.init.zeros_(m.bias)
         elif isinstance(m, torch.nn.GRU):
             for name, param in m.named_parameters():
                 if 'weight' in name:
-                    torch.nn.init.xavier_uniform_(param, gain=0.1)  # Smaller gain
+                    if 'generator' in str(m):
+                        torch.nn.init.xavier_uniform_(param, gain=0.5)
+                    elif 'estimator' in str(m):
+                        torch.nn.init.xavier_uniform_(param, gain=0.3)
+                    else:
+                        torch.nn.init.xavier_uniform_(param, gain=0.1)
                 elif 'bias' in name:
                     torch.nn.init.zeros_(param)
     

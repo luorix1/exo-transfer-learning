@@ -123,17 +123,29 @@ class GMFTrainer:
 
         # Training steps
         if train:
-            # Phase A: Train Generator and Estimator with alignment loss
+            # Add small noise to break symmetry and prevent collapse
+            noise_scale = 0.01 if self.current_epoch < 5 else 0.001
+            
+            # Phase A: Train Generator and Estimator with alignment loss + noise
             self._set_requires_grad(self.model.decoder, False)
             self._set_requires_grad(self.model.generator, True)
             self._set_requires_grad(self.model.estimator, True)
 
             gmf_generated = self.model.generate_gmf(params, targets)
             gmf_estimated = self.model.estimator(inputs)
-            l1 = self.criterion(gmf_estimated, gmf_generated)
+            
+            # Add noise to prevent collapse
+            gmf_generated_noisy = gmf_generated + torch.randn_like(gmf_generated) * noise_scale
+            gmf_estimated_noisy = gmf_estimated + torch.randn_like(gmf_estimated) * noise_scale
+            
+            l1 = self.criterion(gmf_estimated_noisy, gmf_generated_noisy)
+            
+            # Add regularization to prevent identical outputs
+            gmf_diff = torch.mean((gmf_estimated - gmf_generated) ** 2)
+            l1_reg = l1 + 0.01 * gmf_diff  # Encourage some difference between generator and estimator
 
             self.optimizer_ge.zero_grad()
-            l1.backward()
+            l1_reg.backward()
             torch.nn.utils.clip_grad_norm_(
                 list(self.model.generator.parameters()) + list(self.model.estimator.parameters()),
                 max_norm=1.0,
@@ -146,7 +158,7 @@ class GMFTrainer:
                 for p in list(self.model.generator.parameters()) + list(self.model.estimator.parameters()):
                     if p.grad is not None:
                         total_grad_norm += p.grad.data.norm(2).item() ** 2
-                print(f"Step {self._debug_step}: L1 loss = {l1.item():.6f}, Grad norm = {total_grad_norm ** 0.5:.6f}")
+                print(f"Step {self._debug_step}: L1 loss = {l1.item():.6f}, L1_reg = {l1_reg.item():.6f}, Grad norm = {total_grad_norm ** 0.5:.6f}")
             if not hasattr(self, '_debug_step'):
                 self._debug_step = 0
             self._debug_step += 1
