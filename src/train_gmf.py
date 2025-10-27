@@ -171,16 +171,14 @@ def main():
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
 
-    # Two optimizers: GE (generator+estimator) and GD (generator+decoder)
-    params_ge = list(model.generator.parameters()) + list(model.estimator.parameters())
-    params_gd = list(model.generator.parameters()) + list(model.decoder.parameters())
-    lr_ge = float(args.lr_ge) if args.lr_ge is not None else float(config['learning_rate'])
-    lr_gd = float(args.lr_gd) if args.lr_gd is not None else float(config['learning_rate'])
+    # Single optimizer for end-to-end training
+    all_params = list(model.parameters())
+    lr = float(config['learning_rate'])
     wd = float(args.weight_decay)
-    optimizer_ge = Adam(params_ge, lr=lr_ge, weight_decay=wd)
-    optimizer_gd = Adam(params_gd, lr=lr_gd, weight_decay=wd)
+    optimizer_ge = Adam(all_params, lr=lr, weight_decay=wd)
+    optimizer_gd = None  # Not used in simplified approach
     scheduler_ge = ReduceLROnPlateau(optimizer_ge, mode='min', patience=5, factor=0.5, verbose=True)
-    scheduler_gd = ReduceLROnPlateau(optimizer_gd, mode='min', patience=5, factor=0.5, verbose=True)
+    scheduler_gd = None  # Not used in simplified approach
 
     trainer = GMFTrainer(
         model=model,
