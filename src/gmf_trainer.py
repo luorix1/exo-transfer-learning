@@ -51,6 +51,14 @@ class GMFTrainer:
 
         self.label_mean_tensor = torch.tensor(self.data_handler.label_mean, device=self.device)
         self.label_std_tensor = torch.tensor(self.data_handler.label_std, device=self.device)
+        
+        # Handle case where subject parameters might not be available
+        if hasattr(self.data_handler, 'param_mean') and self.data_handler.param_mean is not None:
+            self.param_mean_tensor = torch.tensor(self.data_handler.param_mean, device=self.device)
+            self.param_std_tensor = torch.tensor(self.data_handler.param_std, device=self.device)
+        else:
+            self.param_mean_tensor = None
+            self.param_std_tensor = None
 
         self.best_val_loss = float('inf')
         self.best_epoch = -1
@@ -84,10 +92,20 @@ class GMFTrainer:
         batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
         train: bool = True,
     ) -> Dict[str, float]:
-        inputs, targets, params = batch
+        if len(batch) == 3:
+            inputs, targets, params = batch
+        else:
+            inputs, targets = batch
+            # Create dummy parameters if not available (mass=70kg, height=1.7m as defaults)
+            params = torch.tensor([[70.0, 1.7]] * targets.shape[0], device=self.device)
+        
         inputs = inputs.to(self.device)
         targets = targets.to(self.device)
         params = params.to(self.device)
+        
+        # Normalize parameters if available
+        if self.param_mean_tensor is not None and self.param_std_tensor is not None:
+            params = (params - self.param_mean_tensor) / self.param_std_tensor
 
         # Phase A: update Generator (G) and Estimator (E) using feature consistency loss L1
         if train:
@@ -209,10 +227,21 @@ class GMFTrainer:
         batches = 0
 
         with torch.no_grad():
-            for inputs, targets, params in test_loader:
+            for batch in test_loader:
+                if len(batch) == 3:
+                    inputs, targets, params = batch
+                else:
+                    inputs, targets = batch
+                    # Create dummy parameters if not available (mass=70kg, height=1.7m as defaults)
+                    params = torch.tensor([[70.0, 1.7]] * targets.shape[0], device=self.device)
+                
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
                 params = params.to(self.device)
+                
+                # Normalize parameters if available
+                if self.param_mean_tensor is not None and self.param_std_tensor is not None:
+                    params = (params - self.param_mean_tensor) / self.param_std_tensor
 
                 gmf_estimated = self.model.estimator(inputs)
                 decoded = self.model.decode(params, gmf_estimated)

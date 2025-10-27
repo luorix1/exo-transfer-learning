@@ -114,20 +114,31 @@ def main():
     else:
         wandb_run = None
 
-    data_handler = DataHandler(args.data_root, config)
+    data_handler = DataHandler(
+        data_root=config['data_root'],
+        hyperparam_config=config,
+        pretrained_model_path=None
+    )
+    
+    # Load data
     data_handler.load_data(
         train_data_partition=args.train_subjects,
         train_data_condition=args.conditions,
-        test_data_partition=args.test_subjects,
+        test_data_partition=args.test_subjects
     )
+    
+    # Save normalization parameters
+    data_handler.save_mean_std(args.save_dir)
 
     train_indices, val_indices = data_handler.get_train_val_indices()
     train_loader, val_loader = data_handler.create_dataloaders(train_indices, val_indices)
     test_loader = data_handler.create_dataloaders(test_indices=1)
 
-    param_size = 0
+    param_size = 2  # Default to 2 parameters (mass, height)
     if getattr(data_handler.train_data, 'subject_params', None) is not None:
         param_size = data_handler.train_data.subject_params.shape[1]
+    elif hasattr(data_handler, 'param_mean') and data_handler.param_mean is not None:
+        param_size = data_handler.param_mean.shape[0]
 
     model = GMFModel(
         input_size=config['input_size'],
@@ -177,8 +188,6 @@ def main():
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
         print(f"Loaded best checkpoint from epoch {best_epoch}")
-
-    data_handler.save_mean_std(args.save_dir)
 
     test_metrics = trainer.test(test_loader)
     print(f"Test Loss: {test_metrics['loss']:.6f}")
