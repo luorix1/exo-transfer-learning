@@ -171,13 +171,13 @@ def main():
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
 
-    # Single optimizer for end-to-end training
+    # Single optimizer for end-to-end training with better regularization
     all_params = list(model.parameters())
     lr = float(config['learning_rate'])
-    wd = float(args.weight_decay)
-    optimizer_ge = Adam(all_params, lr=lr, weight_decay=wd)
+    wd = float(args.weight_decay) if args.weight_decay > 0 else 1e-4  # Add weight decay for stability
+    optimizer_ge = Adam(all_params, lr=lr, weight_decay=wd, eps=1e-8)
     optimizer_gd = None  # Not used in simplified approach
-    scheduler_ge = ReduceLROnPlateau(optimizer_ge, mode='min', patience=5, factor=0.5, verbose=True)
+    scheduler_ge = ReduceLROnPlateau(optimizer_ge, mode='min', patience=3, factor=0.7, verbose=True, min_lr=1e-7)
     scheduler_gd = None  # Not used in simplified approach
 
     trainer = GMFTrainer(

@@ -64,6 +64,8 @@ class GMFTrainer:
         self.best_epoch = -1
         self.best_checkpoint_path: Optional[str] = None
         self.current_epoch = 0
+        self.patience_counter = 0
+        self.early_stopping_patience = 10
 
         self.train_accuracy_history = []
         self.val_accuracy_history = []
@@ -138,13 +140,20 @@ class GMFTrainer:
             # Use the GE optimizer for end-to-end training
             self.optimizer_ge.zero_grad()
             main_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
+            
+            # More aggressive gradient clipping for stability
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 list(self.model.generator.parameters()) + 
                 list(self.model.estimator.parameters()) + 
                 list(self.model.decoder.parameters()),
-                max_norm=1.0,
+                max_norm=0.5,  # Reduced from 1.0 for stability
             )
-            self.optimizer_ge.step()
+            
+            # Skip update if gradients are too large
+            if grad_norm > 10.0:
+                print(f"WARNING: Skipping update due to large gradients: {grad_norm:.2f}")
+            else:
+                self.optimizer_ge.step()
             
             # Debug: Print gradients occasionally
             if hasattr(self, '_debug_step') and self._debug_step % 50 == 0:
@@ -156,6 +165,7 @@ class GMFTrainer:
                 print(f"  Input range: [{inputs.min().item():.4f}, {inputs.max().item():.4f}]")
                 print(f"  Target range: [{targets.min().item():.4f}, {targets.max().item():.4f}]")
                 print(f"  Pred range: [{decoded_from_estimator.min().item():.4f}, {decoded_from_estimator.max().item():.4f}]")
+                print(f"  GMF range: [{gmf_estimated.min().item():.4f}, {gmf_estimated.max().item():.4f}]")
             if not hasattr(self, '_debug_step'):
                 self._debug_step = 0
             self._debug_step += 1
@@ -307,15 +317,24 @@ class GMFTrainer:
                     log_dict['lr/gd'] = self.optimizer_gd.param_groups[0]['lr']
                 wandb.log(log_dict)
 
+            # Use validation RMSE for learning rate scheduling (more stable than loss)
             if self.scheduler_ge is not None:
-                self.scheduler_ge.step(val_metrics['loss'])
+                self.scheduler_ge.step(val_metrics['rmse'])
             if self.scheduler_gd is not None:
-                self.scheduler_gd.step(val_metrics['loss'])
+                self.scheduler_gd.step(val_metrics['rmse'])
 
             if val_metrics['rmse'] < self.best_val_loss:
                 self.best_val_loss = val_metrics['rmse']
                 self.best_epoch = epoch
+                self.patience_counter = 0
                 self.save_checkpoint(epoch)
+            else:
+                self.patience_counter += 1
+                
+            # Early stopping
+            if self.patience_counter >= self.early_stopping_patience:
+                print(f"Early stopping at epoch {epoch} (patience: {self.early_stopping_patience})")
+                break
 
         self._save_accuracy_plot()
 
