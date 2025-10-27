@@ -289,7 +289,7 @@ class GMFTrainer:
             self.val_rmse_history.append(val_metrics['rmse'])
 
             if self.run is not None:
-                wandb.log({
+                log_dict = {
                     'epoch': epoch,
                     'train/loss': train_metrics['loss'],
                     'train/rmse': train_metrics['rmse'],
@@ -302,8 +302,10 @@ class GMFTrainer:
                     'val/L1': val_metrics['l1'],
                     'val/L2': val_metrics['l2'],
                     'lr/ge': self.optimizer_ge.param_groups[0]['lr'],
-                    'lr/gd': self.optimizer_gd.param_groups[0]['lr'],
-                })
+                }
+                if self.optimizer_gd is not None:
+                    log_dict['lr/gd'] = self.optimizer_gd.param_groups[0]['lr']
+                wandb.log(log_dict)
 
             if self.scheduler_ge is not None:
                 self.scheduler_ge.step(val_metrics['loss'])
