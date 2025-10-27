@@ -21,7 +21,7 @@ class GMFGenerator(nn.Module):
             in_features = input_dim if layer_idx == 0 else hidden_size
             layers.append(nn.Linear(in_features, hidden_size))
             layers.append(nn.LeakyReLU(negative_slope=0.01, inplace=True))
-            layers.append(nn.Dropout(0.1))  # Add dropout for regularization
+            layers.append(nn.Dropout(0.2))  # Increased dropout for better regularization
         layers.append(nn.Linear(hidden_size, gmf_size))
         self.network = nn.Sequential(*layers)
 
@@ -73,7 +73,7 @@ class GMFDecoder(nn.Module):
             in_features = input_dim if layer_idx == 0 else hidden_size
             layers.append(nn.Linear(in_features, hidden_size))
             layers.append(nn.LeakyReLU(negative_slope=0.01, inplace=True))
-            layers.append(nn.Dropout(0.1))  # Add dropout for regularization
+            layers.append(nn.Dropout(0.2))  # Increased dropout for better regularization
         layers.append(nn.Linear(hidden_size, output_size))
         self.network = nn.Sequential(*layers)
 

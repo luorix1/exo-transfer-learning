@@ -45,7 +45,7 @@ DEFAULT_GMF_CONFIG = {
     # Training parameters
     'epochs': 60,
     'batch_size': 32,
-    'learning_rate': 5e-5,  # Lower learning rate for stability
+    'learning_rate': 1e-3,  # Higher learning rate that worked
     'number_of_workers': 0,
     'validation_split': 0.1,
     'dataset_proportion': 1.0,

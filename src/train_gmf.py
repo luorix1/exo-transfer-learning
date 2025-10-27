@@ -152,16 +152,16 @@ def main():
         param_size=param_size,
     ).to(device)
     
-    # Initialize model weights properly
+    # Initialize model weights properly with smaller scale
     def init_weights(m):
         if isinstance(m, torch.nn.Linear):
-            torch.nn.init.xavier_uniform_(m.weight)
+            torch.nn.init.xavier_uniform_(m.weight, gain=0.1)  # Smaller gain
             if m.bias is not None:
                 torch.nn.init.zeros_(m.bias)
         elif isinstance(m, torch.nn.GRU):
             for name, param in m.named_parameters():
                 if 'weight' in name:
-                    torch.nn.init.xavier_uniform_(param)
+                    torch.nn.init.xavier_uniform_(param, gain=0.1)  # Smaller gain
                 elif 'bias' in name:
                     torch.nn.init.zeros_(param)
     
@@ -171,14 +171,15 @@ def main():
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
 
-    # Single optimizer for end-to-end training with better regularization
-    all_params = list(model.parameters())
+    # Two optimizers for multi-phase training: GE (generator+estimator) and GD (generator+decoder)
+    params_ge = list(model.generator.parameters()) + list(model.estimator.parameters())
+    params_gd = list(model.generator.parameters()) + list(model.decoder.parameters())
     lr = float(config['learning_rate'])
-    wd = float(args.weight_decay) if args.weight_decay > 0 else 1e-4  # Add weight decay for stability
-    optimizer_ge = Adam(all_params, lr=lr, weight_decay=wd, eps=1e-8)
-    optimizer_gd = None  # Not used in simplified approach
+    wd = float(args.weight_decay) if args.weight_decay > 0 else 1e-3  # Increased weight decay for regularization
+    optimizer_ge = Adam(params_ge, lr=lr, weight_decay=wd, eps=1e-8)
+    optimizer_gd = Adam(params_gd, lr=lr, weight_decay=wd, eps=1e-8)
     scheduler_ge = ReduceLROnPlateau(optimizer_ge, mode='min', patience=3, factor=0.7, verbose=True, min_lr=1e-7)
-    scheduler_gd = None  # Not used in simplified approach
+    scheduler_gd = ReduceLROnPlateau(optimizer_gd, mode='min', patience=3, factor=0.7, verbose=True, min_lr=1e-7)
 
     trainer = GMFTrainer(
         model=model,
