@@ -79,7 +79,7 @@ class DataHandler:
             return 'keaton'  # Higher sampling rate, needs downsampling
         elif 'Canonical_Molinaro' in data_root_str:
             return 'molinaro'  # Higher sampling rate, needs downsampling
-        elif 'Canonical_MeMo' in data_root_str:
+        elif 'Canonical_MetaMobility' in data_root_str:
             return 'memo'     # Standard sampling rate
         else:
             return 'unknown'  # Default to no downsampling
