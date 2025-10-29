@@ -334,11 +334,7 @@ def predict_on_trial(
             else:
                 true_data = None
         
-        if true_data is not None:
-            # Flip sign for MetaMobility dataset
-            if dataset_type == 'memo':
-                true_data = -true_data
-            
+        if true_data is not None:            
             # Make sure we don't go out of bounds
             for i in range(num_windows):
                 label_idx = min(i + window_size - 1, len(true_data) - 1)
