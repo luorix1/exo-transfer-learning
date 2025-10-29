@@ -60,7 +60,7 @@ def detect_dataset_type(data_root: str) -> str:
         return 'keaton'  # Higher sampling rate, needs downsampling
     elif 'Canonical_Molinaro' in data_root:
         return 'molinaro'  # Higher sampling rate, needs downsampling
-    elif 'Canonical_MeMo' in data_root or 'Canonical_Memo' in data_root:
+    elif 'Canonical_MetaMobility' in data_root:
         return 'memo'     # Standard sampling rate
     else:
         return 'unknown'  # Default to no special handling
