@@ -292,7 +292,7 @@ def predict_on_trial(
                 true_data_r = true_data_r[::2]
             elif dataset_type == 'memo':
                 # Apply sign flip for memo dataset (matching dataloader)
-                true_data_r = true_data_r
+                true_data_r = -1 * true_data_r
             
             # Apply the same low-pass filter as used in training
             true_data_r = butter_lowpass_zero_phase(true_data_r, cutoff_hz=label_filter_hz)
@@ -335,12 +335,10 @@ def predict_on_trial(
                 true_data = None
         
         if true_data is not None:
-            # Apply temporary sign flip for Canonical_MeMo dataset
+            # Flip sign for MetaMobility dataset
             if dataset_type == 'memo':
-                print(f"Applying temporary sign flip for {dataset_type} ground truth labels...")
                 true_data = -true_data
             
-            # Get labels corresponding to the last time point of each window
             # Make sure we don't go out of bounds
             for i in range(num_windows):
                 label_idx = min(i + window_size - 1, len(true_data) - 1)
@@ -375,8 +373,8 @@ def predict_on_trial(
                 if dataset_type in ['camargo', 'keaton', 'molinaro']:
                     true_data_r = true_data_r[::2]
                 elif dataset_type == 'memo':
-                    # Apply sign flip for memo dataset (matching dataloader)
-                    true_data_r = -true_data_r
+                    # No sign flip for memo to match training
+                    true_data_r = true_data_r
                 
                 # Apply the same low-pass filter as used in training
                 true_data_r = butter_lowpass_zero_phase(true_data_r, cutoff_hz=label_filter_hz)
@@ -390,8 +388,8 @@ def predict_on_trial(
                 if dataset_type in ['camargo', 'keaton', 'molinaro']:
                     true_data_l = true_data_l[::2]
                 elif dataset_type == 'memo':
-                    # Apply sign flip for memo dataset (matching dataloader)
-                    true_data_l = -true_data_l
+                    # No sign flip for memo to match training
+                    true_data_l = true_data_l
                 
                 # Apply the same low-pass filter as used in training
                 true_data_l = butter_lowpass_zero_phase(true_data_l, cutoff_hz=label_filter_hz)
