@@ -316,8 +316,7 @@ def predict_on_trial(
         # For memo dataset, only use right side data to avoid sign convention issues
         if dataset_type == 'memo':
             if true_data_r is not None:
-                #FIXME: Flip sign for MetaMobility dataset
-                true_data = -1 * true_data_r
+                true_data = true_data_r
             else:
                 true_data = None
         else:
