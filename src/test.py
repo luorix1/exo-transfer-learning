@@ -290,9 +290,6 @@ def predict_on_trial(
             # Apply downsampling to labels if needed (matching dataloader)
             if dataset_type in ['camargo', 'keaton', 'molinaro']:
                 true_data_r = true_data_r[::2]
-            elif dataset_type == 'memo':
-                # Apply sign flip for memo dataset (matching dataloader)
-                true_data_r = -1 * true_data_r
             
             # Apply the same low-pass filter as used in training
             true_data_r = butter_lowpass_zero_phase(true_data_r, cutoff_hz=label_filter_hz)
