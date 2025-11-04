@@ -410,9 +410,10 @@ class LoadData(Dataset):
                     if not os.path.exists(input_file_dir) or not os.path.exists(label_file_dir):
                         continue
 
-                    input_file_names = sorted(os.listdir(input_file_dir))
-                    label_file_names = sorted(os.listdir(label_file_dir))
-                    if not label_file_names:
+                    # Use only CSV files (ignore images like *.png)
+                    input_file_names = sorted([f for f in os.listdir(input_file_dir) if f.lower().endswith('.csv')])
+                    label_csv_names = sorted([f for f in os.listdir(label_file_dir) if f.lower().endswith('.csv')])
+                    if not label_csv_names:
                         continue
 
                     input_buffer_R = None
@@ -502,7 +503,9 @@ class LoadData(Dataset):
                     if input_buffer_R is None:
                         continue
 
-                    label_file_path = os.path.join(label_file_dir, label_file_names[0])
+                    # Prefer joint_moment CSV if present
+                    preferred_label_name = next((f for f in label_csv_names if 'joint_moment' in f.lower()), label_csv_names[0])
+                    label_file_path = os.path.join(label_file_dir, preferred_label_name)
                     try:
                         label_df = pd.read_csv(label_file_path, sep=None, engine='python', on_bad_lines='skip')
                     except Exception:
