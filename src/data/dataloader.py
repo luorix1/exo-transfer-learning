@@ -73,13 +73,13 @@ class DataHandler:
         # Convert to string to handle both string and Path objects
         data_root_str = str(self.data_root)
         
-        if 'Canonical_Camargo' in data_root_str:
+        if 'Camargo' in data_root_str:
             return 'camargo'  # Higher sampling rate, needs downsampling
-        elif 'Canonical_Keaton' in data_root_str:
+        elif 'Keaton' in data_root_str:
             return 'keaton'  # Higher sampling rate, needs downsampling
-        elif 'Canonical_Molinaro' in data_root_str:
+        elif 'Molinaro' in data_root_str:
             return 'molinaro'  # Higher sampling rate, needs downsampling
-        elif 'Canonical_MetaMobility' in data_root_str:
+        elif 'MetaMobility' in data_root_str:
             return 'memo'     # Standard sampling rate
         else:
             return 'unknown'  # Default to no downsampling

@@ -54,13 +54,13 @@ def load_normalization_params(save_dir: str):
 
 def detect_dataset_type(data_root: str) -> str:
     """Detect dataset type based on data_root path to determine sampling rate."""
-    if 'Canonical_Camargo' in data_root:
+    if 'Camargo' in data_root:
         return 'camargo'  # Higher sampling rate, needs downsampling
-    elif 'Canonical_Keaton' in data_root:
+    elif 'Keaton' in data_root:
         return 'keaton'  # Higher sampling rate, needs downsampling
-    elif 'Canonical_Molinaro' in data_root:
+    elif 'Molinaro' in data_root:
         return 'molinaro'  # Higher sampling rate, needs downsampling
-    elif 'Canonical_MetaMobility' in data_root:
+    elif 'MetaMobility' in data_root:
         return 'memo'     # Standard sampling rate
     else:
         return 'unknown'  # Default to no special handling
