@@ -61,14 +61,21 @@ def load_transform_matrix(transform_path: str = None, euler_angles: list = None,
     """
     Load or create a rotation matrix for coordinate frame transformation.
     
+    IMPORTANT: The returned matrix should transform FROM test dataset's IMU frame 
+    TO training dataset's IMU frame. For example:
+    - If testing on MetaMobility but model trained on Camargo
+    - The matrix should be R_Cam_from_Meta (MetaMobility → Camargo)
+    - This ensures test data matches the coordinate frame the model expects
+    
     Args:
         transform_path: Path to .npy file containing a 3x3 rotation matrix
+                       (should be R_test_to_train, e.g., memo_to_camargo.npy)
         euler_angles: List of [x, y, z] Euler angles in degrees (extrinsic rotations)
         rotation_axis: Single axis rotation ('x', 'y', or 'z')
         rotation_angle: Rotation angle in degrees (for single axis rotation)
     
     Returns:
-        3x3 rotation matrix
+        3x3 rotation matrix that transforms FROM test frame TO training frame
     """
     if transform_path:
         if os.path.exists(transform_path):
@@ -113,28 +120,39 @@ def apply_transform_to_gyro_data(gyro_data: np.ndarray, transform_matrix: np.nda
     """
     Apply rotation matrix to gyroscope data.
     
+    IMPORTANT: The transform_matrix should convert FROM the test dataset's IMU frame 
+    TO the training dataset's IMU frame. For example:
+    - If model trained on Camargo and testing on MetaMobility
+    - transform_matrix should be R_Cam_from_Meta (MetaMobility → Camargo)
+    - This transforms test data to match what the model expects
+    
     Args:
-        gyro_data: Input gyro data, shape (N, channels)
+        gyro_data: Input gyro data in test dataset's coordinate frame, shape (N, channels)
                    - For single IMU: (N, 3) - [femur_x, femur_y, femur_z]
                    - For dual IMU: (N, 6) - [pelvis_x, pelvis_y, pelvis_z, femur_x, femur_y, femur_z]
-        transform_matrix: 3x3 rotation matrix to apply
+        transform_matrix: 3x3 rotation matrix that transforms FROM test frame TO training frame
+                          (e.g., R_Cam_from_Meta for MetaMobility → Camargo)
         imu_segments: List of IMU segments ['femur'] or ['pelvis', 'femur']
     
     Returns:
-        Transformed gyro data with same shape as input
+        Transformed gyro data in training dataset's coordinate frame, same shape as input
     """
     if len(imu_segments) == 1:
         # Single IMU: apply transform to all 3 channels
-        # gyro_data shape: (N, 3)
+        # gyro_data shape: (N, 3) - each row is a 3D vector in test frame
+        # transform_matrix: R_test_to_train (e.g., R_Cam_from_Meta)
+        # For row vectors: v_train = v_test @ R_test_to_train.T
         transformed = gyro_data @ transform_matrix.T
         return transformed
     elif len(imu_segments) == 2:
         # Dual IMU: apply transform to each 3-channel group separately
         # gyro_data shape: (N, 6)
         # First 3 channels: pelvis, last 3 channels: femur
+        # transform_matrix: R_test_to_train (applied to both segments)
         pelvis_gyro = gyro_data[:, :3]
         femur_gyro = gyro_data[:, 3:6]
         
+        # Transform each segment's gyro data from test frame to training frame
         transformed_pelvis = pelvis_gyro @ transform_matrix.T
         transformed_femur = femur_gyro @ transform_matrix.T
         
@@ -146,13 +164,13 @@ def apply_transform_to_gyro_data(gyro_data: np.ndarray, transform_matrix: np.nda
 
 def detect_dataset_type(data_root: str) -> str:
     """Detect dataset type based on data_root path to determine sampling rate."""
-    if 'Canonical_Camargo' in data_root:
+    if 'Camargo' in data_root:
         return 'camargo'  # Higher sampling rate, needs downsampling
-    elif 'Canonical_Keaton' in data_root:
+    elif 'Keaton' in data_root:
         return 'keaton'  # Higher sampling rate, needs downsampling
-    elif 'Canonical_Molinaro' in data_root:
+    elif 'Molinaro' in data_root:
         return 'molinaro'  # Higher sampling rate, needs downsampling
-    elif 'Canonical_MetaMobility' in data_root:
+    elif 'MetaMobility' in data_root:
         return 'memo'     # Standard sampling rate
     else:
         return 'unknown'  # Default to no special handling
