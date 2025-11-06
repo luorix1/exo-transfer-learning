@@ -273,23 +273,44 @@ def create_visualizations(Rg, Sg, t, R, outdir, seg):
     s = np.argmin(np.abs(t - t0))
     e = np.argmin(np.abs(t - t1))
     tt = t[s:e]
-    labs = ["X", "Y", "Z"]
+    
+    # Axis labels with anatomical directions
+    axis_names = ["X (Frontal)", "Y (Transverse)", "Z (Sagittal)"]
     cols = ["r", "g", "b"]
-    fig, ax = plt.subplots(3, 2, figsize=(16, 11))
+    
+    fig, ax = plt.subplots(3, 2, figsize=(18, 12))
+    
+    # Add main title explaining what's being shown
+    fig.suptitle(f"IMU Orientation Optimization: {seg.upper()}\n"
+                 "Before: Real IMU (original orientation) vs Simulated IMU (OpenSim-aligned)\n"
+                 "After: Real IMU (rotated to OpenSim alignment) vs Simulated IMU (OpenSim-aligned)",
+                 fontsize=13, fontweight='bold', y=0.995)
+    
     for i in range(3):
-        ax[i, 0].plot(tt, Rg[s:e, i], cols[i], alpha=0.7, label="Real (orig)")
-        ax[i, 0].plot(tt, Sg[s:e, i], cols[i], ls="--", alpha=0.9, label="Sim (target)")
-        ax[i, 0].set_title(f"Before - {labs[i]}")
-        ax[i, 0].grid(True)
-        ax[i, 0].legend()
-        ax[i, 1].plot(tt, rot[s:e, i], cols[i], alpha=0.7, label="Real (rotated)")
-        ax[i, 1].plot(tt, Sg[s:e, i], cols[i], ls="--", alpha=0.9, label="Sim (target)")
-        ax[i, 1].set_title(f"After - {labs[i]}")
-        ax[i, 1].grid(True)
-        ax[i, 1].legend()
-    ax[-1, 0].set_xlabel("Time (s)")
-    ax[-1, 1].set_xlabel("Time (s)")
-    plt.tight_layout()
+        # Before plot: Real IMU in original orientation vs Simulated IMU (OpenSim-aligned)
+        ax[i, 0].plot(tt, Rg[s:e, i], cols[i], alpha=0.7, linewidth=2, 
+                     label="Real IMU (original orientation)")
+        ax[i, 0].plot(tt, Sg[s:e, i], cols[i], ls="--", alpha=0.9, linewidth=2,
+                     label="Simulated IMU (OpenSim-aligned)")
+        ax[i, 0].set_title(f"Before Alignment - {axis_names[i]}", fontsize=12, fontweight='bold')
+        ax[i, 0].set_ylabel("Angular Velocity (rad/s)", fontsize=10)
+        ax[i, 0].grid(True, alpha=0.3)
+        ax[i, 0].legend(fontsize=9, loc='best')
+        
+        # After plot: Rotated Real IMU (now OpenSim-aligned) vs Simulated IMU (OpenSim-aligned)
+        ax[i, 1].plot(tt, rot[s:e, i], cols[i], alpha=0.7, linewidth=2,
+                     label="Real IMU (rotated to OpenSim alignment)")
+        ax[i, 1].plot(tt, Sg[s:e, i], cols[i], ls="--", alpha=0.9, linewidth=2,
+                     label="Simulated IMU (OpenSim-aligned)")
+        ax[i, 1].set_title(f"After Alignment - {axis_names[i]}", fontsize=12, fontweight='bold')
+        ax[i, 1].set_ylabel("Angular Velocity (rad/s)", fontsize=10)
+        ax[i, 1].grid(True, alpha=0.3)
+        ax[i, 1].legend(fontsize=9, loc='best')
+        
+    ax[-1, 0].set_xlabel("Time (s)", fontsize=11, fontweight='bold')
+    ax[-1, 1].set_xlabel("Time (s)", fontsize=11, fontweight='bold')
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.98])  # Leave space for suptitle
     p = outdir / f"comparison_{seg}.png"
     plt.savefig(p, dpi=300, bbox_inches="tight")
     plt.close()
@@ -303,11 +324,11 @@ def create_visualizations(Rg, Sg, t, R, outdir, seg):
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection="3d")
     
-    # Define colors and labels with better descriptions
+    # Define colors and labels with anatomical directions
     colors = ["#FF4444", "#44AA44", "#4444FF"]  # Red, Green, Blue
-    axis_names = ["X (Medial-Lateral)", "Y (Anterior-Posterior)", "Z (Superior-Inferior)"]
-    osim_labels = ["OpenSim X", "OpenSim Y", "OpenSim Z"]
-    imu_labels = ["IMU X", "IMU Y", "IMU Z"]
+    axis_names = ["X (Frontal)", "Y (Transverse)", "Z (Sagittal)"]
+    osim_labels = ["OpenSim X (Frontal)", "OpenSim Y (Transverse)", "OpenSim Z (Sagittal)"]
+    imu_labels = ["IMU X (Frontal)", "IMU Y (Transverse)", "IMU Z (Sagittal)"]
     
     # Plot OpenSim axes (dashed, thicker)
     for i in range(3):
@@ -341,15 +362,16 @@ def create_visualizations(Rg, Sg, t, R, outdir, seg):
     ax.set_ylim([-max_range, max_range])
     ax.set_zlim([-max_range, max_range])
     
-    # Add axis labels
-    ax.set_xlabel("X (Medial-Lateral)", fontsize=12, fontweight='bold')
-    ax.set_ylabel("Y (Anterior-Posterior)", fontsize=12, fontweight='bold')
-    ax.set_zlabel("Z (Superior-Inferior)", fontsize=12, fontweight='bold')
+    # Add axis labels with anatomical directions
+    ax.set_xlabel("X (Frontal)", fontsize=12, fontweight='bold')
+    ax.set_ylabel("Y (Transverse)", fontsize=12, fontweight='bold')
+    ax.set_zlabel("Z (Sagittal)", fontsize=12, fontweight='bold')
     
-    # Enhanced title with segment info
+    # Enhanced title with segment info and clear explanation
     ax.set_title(f"IMU Orientation Optimization: {seg.upper()}\n"
-                f"OpenSim Canonical Frame (dashed) vs Optimized IMU Frame (solid)", 
-                fontsize=14, fontweight='bold', pad=20)
+                f"OpenSim Canonical Frame (dashed) vs Optimized Real IMU Frame (solid)\n"
+                f"After optimization, Real IMU is rotated to align with OpenSim axes", 
+                fontsize=13, fontweight='bold', pad=20)
     
     # Improve legend
     handles, labels = ax.get_legend_handles_labels()
@@ -383,9 +405,9 @@ def create_visualizations(Rg, Sg, t, R, outdir, seg):
     # Create a 2D projection comparison for better understanding
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     projections = [
-        (0, 1, "X-Y Plane (Right View)", "X (Medial-Lateral)", "Y (Anterior-Posterior)"),
-        (2, 0, "Z-X Plane (Top View)", "Z (Superior-Inferior)", "X (Medial-Lateral)"), 
-        (2, 1, "Z-Y Plane (Front View)", "Z (Superior-Inferior)", "Y (Anterior-Posterior)")
+        (0, 1, "X-Y Plane (Right View)", "X (Frontal)", "Y (Transverse)"),
+        (2, 0, "Z-X Plane (Top View)", "Z (Sagittal)", "X (Frontal)"), 
+        (2, 1, "Z-Y Plane (Front View)", "Z (Sagittal)", "Y (Transverse)")
     ]
     
     for idx, (i, j, title, xlabel, ylabel) in enumerate(projections):
