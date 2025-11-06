@@ -38,7 +38,7 @@ def parse_args():
                        help='MetaMobility subject identifier (default: AB14_Evy)')
     parser.add_argument('--conditions', nargs='+', default=['1p2mps'],
                        help='Conditions to use for fine-tuning')
-    parser.add_argument('--imu_segments', nargs='+', default=['pelvis', 'femur'],
+    parser.add_argument('--imu_segments', nargs='+', default=['femur'],
                        help='IMU segments to use')
     parser.add_argument('--epochs', type=int, default=20,
                        help='Number of fine-tuning epochs')
