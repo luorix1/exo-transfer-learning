@@ -64,6 +64,8 @@ def parse_args():
                        help='Random seed for reproducibility')
     parser.add_argument('--no_normalize', action='store_true',
                        help='Disable input normalization (use raw IMU data)')
+    parser.add_argument('--freeze_backbone', action='store_true',
+                       help='Freeze all weights except the final linear layer (only fine-tune output head)')
     return parser.parse_args()
 
 
@@ -105,8 +107,33 @@ def invert_model_output(model: TCNModel) -> None:
     print("✓ Inverted model output by negating final linear layer weights and bias")
 
 
+def freeze_backbone_weights(model: TCNModel) -> None:
+    """Freeze all model parameters except the final linear layer.
+    
+    This is useful for transfer learning where you only want to fine-tune
+    the output head while keeping the feature extractor (TCN backbone) frozen.
+    """
+    # Freeze all parameters first
+    for param in model.parameters():
+        param.requires_grad = False
+    
+    # Unfreeze only the linear layer
+    for param in model.linear.parameters():
+        param.requires_grad = True
+    
+    # Count frozen and trainable parameters
+    frozen_params = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    
+    print(f"✓ Frozen backbone weights:")
+    print(f"  - Frozen parameters: {frozen_params:,} ({frozen_params/total_params*100:.2f}%)")
+    print(f"  - Trainable parameters: {trainable_params:,} ({trainable_params/total_params*100:.2f}%)")
+    print(f"  - Only linear layer will be updated during fine-tuning")
+
+
 def load_pretrained_model(checkpoint_dir: str, device: torch.device, 
-                         config: dict) -> TCNModel:
+                         config: dict, freeze_backbone: bool = False) -> TCNModel:
     """Load pretrained model from checkpoint."""
     # Determine checkpoint file
     checkpoint_path = Path(checkpoint_dir)
@@ -137,6 +164,10 @@ def load_pretrained_model(checkpoint_dir: str, device: torch.device,
     
     # Invert model output for MetaMobility sign convention
     invert_model_output(model)
+    
+    # Freeze backbone if requested
+    if freeze_backbone:
+        freeze_backbone_weights(model)
     
     return model
 
@@ -204,6 +235,7 @@ def main():
             'pretrained_checkpoint': args.pretrained_checkpoint,
             'fine_tuning': True,
             'subject': args.subject,
+            'freeze_backbone': args.freeze_backbone,
             'device': str(device),
             'pytorch_version': torch.__version__,
         }
@@ -241,13 +273,21 @@ def main():
     data_handler.save_mean_std(args.save_dir)
     
     # Load pretrained model and invert output
-    model = load_pretrained_model(args.pretrained_checkpoint, device, pretrained_config)
+    model = load_pretrained_model(args.pretrained_checkpoint, device, pretrained_config, 
+                                 freeze_backbone=args.freeze_backbone)
     
     # Initialize loss function
     criterion = JointMomentLoss()
     
-    # Initialize optimizer with lower learning rate for fine-tuning
-    optimizer = Adam(model.parameters(), lr=config['learning_rate'], weight_decay=args.weight_decay)
+    # Initialize optimizer - only include trainable parameters
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if len(trainable_params) == 0:
+        raise ValueError("No trainable parameters found! Check if freeze_backbone is set correctly.")
+    
+    optimizer = Adam(trainable_params, lr=config['learning_rate'], weight_decay=args.weight_decay)
+    
+    if args.freeze_backbone:
+        print(f"✓ Optimizer configured to update only {len(trainable_params)} parameter group(s)")
     
     # Initialize scheduler
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
