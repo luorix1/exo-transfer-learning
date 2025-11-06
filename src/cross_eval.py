@@ -198,7 +198,10 @@ def predict_on_trial(
         idx = min(i + window_size - 1, len(true_data) - 1)
         true_labels.append(true_data[idx])
 
-    if not predictions or not true_labels:
+    # Explicit checks to avoid ambiguous truth value for numpy arrays
+    predictions_empty = (isinstance(predictions, list) and len(predictions) == 0) or \
+                        (isinstance(predictions, np.ndarray) and predictions.size == 0)
+    if predictions_empty or len(true_labels) == 0:
         return None, None, None
 
     predictions = np.array(predictions)
@@ -231,7 +234,7 @@ def compute_metrics(y_pred: np.ndarray, y_true: np.ndarray) -> Tuple[float, floa
 def discover_subjects(data_root: str) -> List[str]:
     subs = []
     for name in sorted(os.listdir(data_root)):
-        if name.startswith('.'):
+        if name.startswith('.'): 
             continue
         p = os.path.join(data_root, name)
         if os.path.isdir(p):
